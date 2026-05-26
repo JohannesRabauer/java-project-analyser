@@ -1,0 +1,6 @@
+*
+!.mvn/
+!.mvn/wrapper/**
+!mvnw
+!pom.xml
+!src/main/**

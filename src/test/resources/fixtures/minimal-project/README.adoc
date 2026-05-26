@@ -1,0 +1,3 @@
+= Minimal Project
+
+This fixture exists for `FilesystemProjectAdapter` tests.

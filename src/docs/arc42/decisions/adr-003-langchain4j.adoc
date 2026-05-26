@@ -1,0 +1,76 @@
+= ADR-003: LangChain4J for LLM Integration
+
+[cols="1,2"]
+|===
+| Status | Accepted
+| Date   | 2026-05-26
+|===
+
+== Context
+
+The application must call LLM APIs from at least three providers (Ollama, OpenAI, Anthropic) with a consistent interface.
+Each provider has a different SDK, authentication scheme, and request/response shape.
+The `LlmPort` must be implementable without duplicating retry logic, token counting, or structured-output parsing.
+
+Options evaluated: LangChain4J, direct HTTP/SDK calls per provider, Semantic Kernel for Java.
+
+== Pugh Matrix
+
+Baseline: LangChain4J.
+
+[cols="3,1,1,1", options="header"]
+|===
+| Criterion | LangChain4J (baseline) | Direct API calls | Semantic Kernel Java
+
+| Multi-provider support (Ollama, OpenAI, Anthropic)
+| 0
+| -1
+| 0
+
+| Quarkus integration (`quarkus-langchain4j` extension)
+| 0
+| 0
+| -1
+
+| Structured output (JSON schema binding)
+| 0
+| -1
+| 0
+
+| Token counting + context-window utilities
+| 0
+| -1
+| 0
+
+| Community activity (stars, releases)
+| 0
+| 0
+| -1
+
+| Streaming response support
+| 0
+| 0
+| 0
+
+| *Total*
+| *0*
+| *-3*
+| *-2*
+|===
+
+== Decision
+
+LangChain4J with the `quarkus-langchain4j` extension.
+
+LangChain4J is the most mature Java LLM library.
+The `quarkus-langchain4j` extension integrates it into the Quarkus CDI lifecycle: each provider's `ChatLanguageModel` is a CDI bean, and the active provider is selected by Quarkus profile — eliminating any runtime `if/else` in the adapter.
+The `@RegisterAiService` annotation and structured-output support via `@P` + return-type mapping reduce the `LangChain4JLlmAdapter` to configuration rather than code.
+
+== Consequences
+
+* Adding a new LLM provider (e.g., Google Gemini) requires: adding the `quarkus-langchain4j-gemini` dependency and one `application-{profile}.properties` entry — no code changes in the domain or pipeline.
+This directly delivers QG-1.
+* LangChain4J's structured-output support relies on the model's JSON mode or function-calling.
+Models that do not support these features (some older Ollama models) fall back to prompt-instructed JSON; schema validation in the adapter becomes more critical.
+* LangChain4J is pre-1.0 (as of 2026); API changes between minor versions must be tracked.
+Pin the version in `pom.xml`.

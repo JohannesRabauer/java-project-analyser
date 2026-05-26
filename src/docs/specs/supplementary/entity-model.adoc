@@ -1,0 +1,383 @@
+= Entity Model
+:doctype: article
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectanchors:
+:icons: font
+
+== Purpose
+
+This document defines the core domain entities of the Java Project Analyser.
+These entities model the lifecycle of an analysis run, not the artefacts of the analysed project.
+
+== Entities
+
+=== AnalysisJob
+
+Represents a single analysis run from invocation to completion or failure.
+
+[cols="1,1,3", options="header"]
+|===
+| Attribute | Type | Description
+
+| `id`
+| UUID
+| Unique identifier generated at the start of each run.
+
+| `projectSource`
+| `ProjectSource`
+| The input the job analyses.
+
+| `status`
+| `JobStatus`
+| Current lifecycle status. See <<pipeline-state-machine.adoc#,Pipeline State Machine>>.
+
+| `config`
+| `AnalysisConfig`
+| Resolved configuration active for this run (merged from all precedence levels).
+
+| `outputDir`
+| path
+| Directory where the report and JSON artifacts are written.
+
+| `cacheDir`
+| path
+| Directory where phase results and the LLM call log are persisted.
+
+| `createdAt`
+| timestamp
+| When the job was created.
+
+| `startedAt`
+| timestamp (nullable)
+| When phase execution began.
+
+| `completedAt`
+| timestamp (nullable)
+| When the job reached a terminal status.
+|===
+
+---
+
+=== ProjectSource
+
+Describes the input project — either a local path or a remote repository.
+
+[cols="1,1,3", options="header"]
+|===
+| Attribute | Type | Description
+
+| `type`
+| `SourceType`
+| `LOCAL_PATH` or `GIT_URL`.
+
+| `value`
+| string
+| The raw path or URL provided by the user.
+
+| `resolvedLocalPath`
+| path (nullable)
+| The local filesystem path after cloning (set for `GIT_URL` type; identical to `value` for `LOCAL_PATH`).
+
+| `buildSystem`
+| `BuildSystem`
+| `MAVEN` or `GRADLE`, detected from the build descriptor.
+|===
+
+---
+
+=== AnalysisPhase
+
+Represents one of the nine analysis phases within a job.
+
+[cols="1,1,3", options="header"]
+|===
+| Attribute | Type | Description
+
+| `phaseId`
+| integer (1–9)
+| Phase identifier. Fixed semantics: 1 = Application Purpose, 2 = Module, …, 9 = Knowledge Graph.
+
+| `name`
+| string
+| Human-readable phase name (e.g., "Application Purpose Analysis").
+
+| `status`
+| `PhaseStatus`
+| Current lifecycle status. See <<pipeline-state-machine.adoc#,Pipeline State Machine>>.
+
+| `startedAt`
+| timestamp (nullable)
+| When the phase execution began.
+
+| `completedAt`
+| timestamp (nullable)
+| When the phase reached a terminal status.
+
+| `chunkCount`
+| integer
+| Number of LLM calls executed for this phase (1 for non-chunked, N for chunked).
+
+| `result`
+| `PhaseResult` (nullable)
+| Set when status is `COMPLETED` or `DEGRADED`.
+|===
+
+---
+
+=== PhaseResult
+
+The structured output of a completed or degraded phase.
+
+[cols="1,1,3", options="header"]
+|===
+| Attribute | Type | Description
+
+| `phaseId`
+| integer
+| The phase this result belongs to.
+
+| `degraded`
+| boolean
+| `true` when the LLM response could not be parsed into the expected schema.
+
+| `degradedReason`
+| string (nullable)
+| Set when `degraded` is `true`; describes why parsing failed.
+
+| `content`
+| JSON object
+| The structured phase output. Schema is phase-specific.
+
+| `rawResponse`
+| string (nullable)
+| The raw LLM response text. Set when `degraded` is `true`.
+|===
+
+---
+
+=== LlmCall
+
+Records a single call to the LLM API. One record per attempt, including retries.
+
+[cols="1,1,3", options="header"]
+|===
+| Attribute | Type | Description
+
+| `callId`
+| UUID
+| Unique identifier for this call attempt.
+
+| `jobId`
+| UUID
+| The owning analysis job.
+
+| `phaseId`
+| integer
+| The phase during which this call was made.
+
+| `chunkIndex`
+| integer (nullable)
+| The chunk position within a chunked phase; null for non-chunked calls.
+
+| `model`
+| string
+| The model identifier used for this call.
+
+| `attemptNumber`
+| integer
+| 1 for the first try; 2, 3, 4 for retries.
+
+| `promptText`
+| string
+| The full prompt sent to the model.
+
+| `responseText`
+| string (nullable)
+| The raw response received, or null if the call failed without a response.
+
+| `promptTokens`
+| integer (nullable)
+| Token count of the prompt.
+
+| `completionTokens`
+| integer (nullable)
+| Token count of the response.
+
+| `httpStatus`
+| integer (nullable)
+| HTTP status code returned by the API.
+
+| `durationMs`
+| integer
+| Wall-clock duration of the API call in milliseconds.
+
+| `timestamp`
+| timestamp
+| When the call was initiated.
+|===
+
+---
+
+=== AnalysisConfig
+
+Resolved configuration for a single analysis run.
+This is the result of merging all configuration sources per <<../business-rules.adoc#BR-014,BR-014>>.
+
+[cols="1,1,2,2", options="header"]
+|===
+| Attribute | Type | Default | Description
+
+| `apiKey`
+| string
+| —
+| LLM API key. Required; no default.
+
+| `modelId`
+| string
+| `claude-sonnet-4-6`
+| LLM model identifier.
+
+| `outputDir`
+| path
+| `./analysis-output`
+| Report and artifact output directory.
+
+| `cacheDir`
+| path
+| `./analysis-cache`
+| Phase result and LLM call log directory.
+
+| `outputFormat`
+| `OutputFormat`
+| `ADOC`
+| `ADOC` or `MD`.
+
+| `classBatchSize`
+| integer
+| 50
+| Maximum classes per LLM batch in Phase 4.
+
+| `maxRetries`
+| integer
+| 3
+| Maximum LLM call retries per attempt.
+
+| `skipBuildTool`
+| boolean
+| false
+| When `true`, skip build-tool dependency resolution and parse the build descriptor directly.
+|===
+
+---
+
+=== AnalysisReport
+
+Represents the generated report artefact.
+
+[cols="1,1,3", options="header"]
+|===
+| Attribute | Type | Description
+
+| `jobId`
+| UUID
+| The job that produced this report.
+
+| `format`
+| `OutputFormat`
+| `ADOC` or `MD`.
+
+| `filePath`
+| path
+| Absolute path to the generated report file.
+
+| `generatedAt`
+| timestamp
+| When the file was written.
+
+| `toolVersion`
+| string
+| Version of the analyser that generated the report.
+
+| `modelId`
+| string
+| Model used to produce the analysis.
+
+| `phaseCount`
+| integer
+| Number of phases included (9 for a full run; fewer for partial runs).
+
+| `degradedPhases`
+| integer[]
+| IDs of phases that completed with degraded status.
+|===
+
+== Entity Diagram
+
+[plantuml, entity-model, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 11
+skinparam classAttributeIconSize 0
+
+class AnalysisJob {
+  +id: UUID
+  +status: JobStatus
+  +createdAt: timestamp
+  +startedAt: timestamp
+  +completedAt: timestamp
+}
+
+class ProjectSource {
+  +type: SourceType
+  +value: string
+  +resolvedLocalPath: path
+  +buildSystem: BuildSystem
+}
+
+class AnalysisPhase {
+  +phaseId: integer
+  +name: string
+  +status: PhaseStatus
+  +chunkCount: integer
+}
+
+class PhaseResult {
+  +degraded: boolean
+  +content: JSON
+}
+
+class LlmCall {
+  +callId: UUID
+  +phaseId: integer
+  +chunkIndex: integer
+  +model: string
+  +attemptNumber: integer
+  +promptTokens: integer
+  +completionTokens: integer
+  +durationMs: integer
+}
+
+class AnalysisConfig {
+  +modelId: string
+  +outputFormat: OutputFormat
+  +classBatchSize: integer
+  +maxRetries: integer
+}
+
+class AnalysisReport {
+  +format: OutputFormat
+  +filePath: path
+  +toolVersion: string
+}
+
+AnalysisJob "1" *-- "1" ProjectSource : has
+AnalysisJob "1" *-- "9" AnalysisPhase : contains
+AnalysisJob "1" *-- "1" AnalysisConfig : configured by
+AnalysisJob "1" -- "0..1" AnalysisReport : produces
+AnalysisPhase "1" -- "0..1" PhaseResult : yields
+AnalysisPhase "1" *-- "1..*" LlmCall : logs
+@enduml
+....

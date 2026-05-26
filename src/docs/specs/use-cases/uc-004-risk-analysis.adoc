@@ -1,0 +1,111 @@
+= UC-004: Analyse Risks of an Analysed Application
+:doctype: article
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectanchors:
+:icons: font
+
+[cols="1,3"]
+|===
+| ID | UC-004
+| Level | User Goal
+| Primary Actor | User (Software Architect, Project Manager)
+| Supporting Actors | LLM API (system actor)
+| Precedes | —
+| Follows | UC-001 (analysis job must be `INDEXED`)
+|===
+
+== Stakeholders and Interests
+
+[cols="1,3", options="header"]
+|===
+| Stakeholder | Interest
+
+| User
+| Receives a prioritised, actionable list of security vulnerabilities, usability weaknesses, and readability problems without spending days auditing the codebase manually.
+
+| Development team of the analysed project
+| Their codebase is represented accurately; risk findings are grounded in actual code, not generic templates.
+
+| LLM API provider
+| API called within rate limits; context fits within the model's context window.
+|===
+
+== Preconditions
+
+. A completed analysis job exists with status `INDEXED` (UC-001 + Phase 10 completed).
+. The user has selected the job in the Query view.
+
+== Trigger
+
+The user selects **Risk Analysis** from the query capability menu and optionally chooses a scope filter (`SECURITY`, `USABILITY`, `READABILITY`, or `ALL`).
+
+== Main Success Scenario
+
+[cols="1,6", options="header"]
+|===
+| Step | Action
+
+| 1
+| The user selects the desired risk scope (default: `ALL`) and presses **Analyse Risks**.
+
+| 2
+| The system retrieves the top-K knowledge base chunks most semantically relevant to the chosen risk scope (<<../business-rules.adoc#BR-019,BR-019>>, <<../business-rules.adoc#BR-021,BR-021>>).
+
+| 3
+| The system assembles a risk-analysis prompt from the retrieved chunks and submits it to the LLM.
+
+| 4
+| The LLM returns a structured JSON response listing risk findings.
+
+| 5
+| The system validates and parses the response; each finding is stored in the `query_results` table linked to the job.
+
+| 6
+| The system renders the findings in the Risk Report view: findings grouped by category, ordered by descending severity, with component links and recommendations.
+
+| 7
+| The user can export the risk report as AsciiDoc or download it as a PDF-ready HTML file.
+|===
+
+== Extensions
+
+[cols="1,6", options="header"]
+|===
+| Condition | Handling
+
+| 2a. No chunks meet the similarity threshold for the chosen scope.
+| System informs the user that no relevant knowledge base entries were found for the scope and suggests broadening the scope or re-running the analysis.
+
+| 3–4a. LLM call fails.
+| System applies the standard retry policy (<<../business-rules.adoc#BR-016,BR-016>>).
+If all retries fail, the system shows an error and preserves any partial results already retrieved.
+
+| 4b. LLM response cannot be parsed into the expected structure.
+| System retries the call once with a clarifying prompt.
+If the retry also fails, the system marks the query as `DEGRADED`, displays the raw LLM response in a fallback view, and logs the issue.
+|===
+
+== Postconditions
+
+Success::
+* Risk findings are persisted in `query_results` and displayed in the UI.
+* The user can export the report.
+
+Failure::
+* An error message is shown; no partial results are persisted as complete.
+
+== Business Rules
+
+BR-017, BR-018, BR-019, BR-020, BR-021
+
+== EARS Requirements
+
+When the user triggers a risk analysis, the system shall retrieve knowledge base chunks before submitting any LLM call.
+
+When the LLM returns risk findings, the system shall classify each finding into exactly one of the categories: Security, Usability, or Readability.
+
+When a risk finding references a specific class or package, the system shall link it to the corresponding entry in the knowledge base.
+
+If the similarity search returns fewer than 3 chunks, the system shall warn the user that the knowledge base context may be insufficient for a complete risk assessment.

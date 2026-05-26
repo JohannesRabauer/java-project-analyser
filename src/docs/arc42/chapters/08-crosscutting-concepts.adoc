@@ -1,0 +1,170 @@
+= Crosscutting Concepts
+
+== 8.1 Threat Model (STRIDE)
+
+[cols="1,1,3,3", options="header"]
+|===
+| ID | Category | Threat | Asset at Risk
+
+| T-001
+| Information Disclosure
+| Source code of the analysed project is transmitted to a cloud LLM provider (OpenAI, Anthropic) without the operator's explicit awareness.
+| Proprietary or confidential source code inside the mounted workspace.
+
+| T-002
+| Tampering
+| A local attacker modifies cached phase result JSON files to corrupt or falsify the final report.
+| Integrity of the analysis output.
+
+| T-003
+| Denial of Service
+| Repeated analysis requests exhaust LLM API rate limits, blocking legitimate use.
+| Availability of cloud LLM providers.
+
+| T-004
+| Elevation of Privilege
+| A path-traversal or symlink attack in the project file tree causes the application to read files outside `/workspace`.
+| Host filesystem confidentiality.
+
+| T-005
+| Repudiation
+| No record exists of which project was analysed, with which model, or when — making it impossible to audit or reproduce a report.
+| Audit integrity.
+|===
+
+== 8.2 Security
+
+[cols="1,3,2", options="header"]
+|===
+| Threat | Mitigation | Implementation
+
+| T-001
+| The Vaadin UI displays a prominent notice before the first analysis in an `openai` or `anthropic` profile, stating that source code will be sent to a third-party API.
+The user must confirm before the analysis starts.
+| `AnalysisView` consent gate; stored as a session flag.
+
+| T-001
+| The `local` Docker Compose profile keeps all data within the Docker network — no external calls for LLM inference.
+| Ollama container has no outbound network access by default.
+
+| T-002
+| Cache directory is created with `700` permissions (owner-only).
+Phase result files are written atomically (write to `.tmp`, rename) to prevent partial reads.
+| `FilesystemCacheAdapter`
+
+| T-003
+| LangChain4J LLM Adapter enforces exponential-backoff retry (BR-016) and a per-job circuit breaker; jobs that hit the breaker report `FAILED` cleanly rather than looping.
+| `LangChain4JLlmAdapter`
+
+| T-004
+| `FilesystemProjectAdapter` resolves all file paths relative to the workspace root and rejects any path whose canonical form does not start with the workspace root.
+| `FilesystemProjectAdapter.guardPath()`
+
+| T-005
+| Every LLM call is appended to `llm-calls.jsonl` (BR-007). The generated report header includes tool version, model ID, and analysis timestamps (BR-008).
+| `FilesystemCacheAdapter`, `AsciiDocReportAdapter`
+|===
+
+== 8.3 Test
+
+Testing follows the pyramid.
+Each test references the Use Case ID or Business Rule it exercises.
+
+[cols="1,2,2,2", options="header"]
+|===
+| Level | Scope | Tools | Trace Target
+
+| Unit
+| Domain model (value objects, state-machine transitions), Phase Executors with a mock `LlmPort`, `PromptTemplateLoader`, `AsciiDocReportAdapter`.
+| JUnit 5, Mockito
+| Phase Use Cases, BR-001, BR-002, BR-009
+
+| Integration
+| `LangChain4JLlmAdapter` against an embedded Ollama or WireMock stub; `FilesystemProjectAdapter` against a temp directory fixture; `FilesystemCacheAdapter` read/write round-trip.
+| JUnit 5, Testcontainers (Ollama), WireMock
+| SUC-003, BR-004, BR-010, BR-016
+
+| Component
+| Full `AnalysisPipeline` with a WireMock LLM stub; verifies phase ordering, cache persistence, and resume behaviour.
+| JUnit 5, Testcontainers, WireMock
+| UC-001, UC-002, BR-001, BR-002, BR-003
+
+| End-to-End
+| Vaadin UI interaction with the running application; start analysis, observe progress, download report.
+| Playwright or Vaadin TestBench
+| UC-001 MSS, UC-003
+|===
+
+== 8.4 Observability
+
+=== Logging
+
+Quarkus structured logging (JSON output in production).
+Every log entry includes MDC fields `jobId` and `phaseId` when a pipeline operation is active.
+
+Key log events:
+* `AnalysisStarted` — job ID, project source, profile
+* `PhaseStarted` / `PhaseCompleted` / `PhaseFailed` — phase ID, duration
+* `LlmCallAttempt` — attempt number, model, estimated token count
+* `LlmCallResult` — HTTP status, actual token usage, duration ms
+* `ReportGenerated` — output path, format, duration
+
+=== Metrics
+
+Quarkus Micrometer exposes metrics at `/q/metrics`.
+
+[cols="2,2", options="header"]
+|===
+| Metric | Description
+
+| `analyser.phase.duration` (timer, tag: `phaseId`)
+| Wall-clock time per phase execution.
+
+| `analyser.llm.calls.total` (counter, tags: `phaseId`, `status`)
+| Total LLM call attempts, labelled `success` / `retry` / `failed`.
+
+| `analyser.llm.tokens.prompt` / `.completion` (distribution summary)
+| Token usage per call — informs cost tracking and chunking tuning.
+
+| `analyser.jobs.active` (gauge)
+| Number of currently running analysis jobs.
+|===
+
+=== Health
+
+Quarkus health endpoints at `/q/health`:
+
+* `LlmProviderHealthCheck` — verifies the configured LLM provider responds to a lightweight ping.
+* `WorkspaceHealthCheck` — verifies `/workspace` is mounted and readable.
+* `CacheHealthCheck` — verifies the cache directory is writable.
+
+== 8.5 Error Handling
+
+[cols="2,3,2", options="header"]
+|===
+| Error Scenario | Handling Strategy | Reference
+
+| Transient LLM API error (HTTP 429, 5xx, timeout)
+| Exponential-backoff retry, max 3 attempts (1s / 2s / 4s). After exhaustion: phase → `FAILED`; job → `FAILED`; cache flushed.
+| BR-016, SUC-003
+
+| LLM response fails schema validation
+| One clarification retry with a schema-reminder suffix. If retry also fails: phase → `DEGRADED`; raw response cached; pipeline continues.
+| SUC-003, BR-009
+
+| SIGTERM / SIGINT received mid-pipeline
+| Quarkus shutdown hook flushes completed phase results to cache, then exits with code 130. Run is resumable.
+| BR-002, UC-002
+
+| Workspace path inaccessible at startup
+| Application startup fails fast; `WorkspaceHealthCheck` reports `DOWN`; Quarkus refuses to start.
+| TC-04
+
+| LLM provider unreachable at startup
+| `LlmProviderHealthCheck` reports `DOWN`; liveness probe fails; Docker Compose restart policy triggers.
+| TC-03
+
+| Git clone failure
+| `GitProjectAdapter` propagates the `git` exit code and stderr as a user-visible error in the Vaadin UI; job does not start.
+| BR-015
+|===

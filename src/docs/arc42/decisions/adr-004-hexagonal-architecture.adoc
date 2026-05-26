@@ -1,0 +1,98 @@
+= ADR-004: Hexagonal Architecture (Ports & Adapters)
+
+[cols="1,2"]
+|===
+| Status | Accepted
+| Date   | 2026-05-26
+|===
+
+== Context
+
+The application has two axes of variability:
+
+. *LLM provider* — can be Ollama, OpenAI, Anthropic, or any future provider.
+. *Project source* — can be a Docker-mounted directory or a cloned Git repository.
+
+Additionally, the domain logic (9-phase pipeline, prompt templates, result parsing) must be independently unit-testable without starting Docker, calling LLM APIs, or touching the filesystem.
+
+Options evaluated: Layered Architecture, Hexagonal Architecture, Clean Architecture.
+
+== Pugh Matrix
+
+Baseline: Layered Architecture.
+
+[cols="3,1,1,1", options="header"]
+|===
+| Criterion | Layered (baseline) | Hexagonal | Clean Architecture
+
+| LLM adapter swappability without domain change
+| 0
+| +1
+| +1
+
+| Domain unit-testability (no I/O)
+| 0
+| +1
+| +1
+
+| Explicit inward dependency rule
+| 0
+| +1
+| +1
+
+| Structural complexity (additional interfaces)
+| 0
+| 0
+| -1
+
+| Quarkus CDI fit (interface injection)
+| 0
+| +1
+| +1
+
+| *Total*
+| *0*
+| *+4*
+| *+3*
+|===
+
+== Decision
+
+Hexagonal Architecture.
+
+Hexagonal over Clean Architecture because the explicit port-and-adapter naming makes the provider-swap story self-documenting.
+Any developer reading the package structure immediately sees `LlmPort`, `ProjectSourcePort`, `CachePort`, `ReportPort` and understands that each is a swappable slot.
+Clean Architecture's use-case layer adds a mapping overhead that is not justified for an application with only three user-visible use cases.
+
+== Package Structure
+
+[source]
+----
+dev.analyser
+├── domain
+│   ├── model          ← pure domain entities (no framework annotations)
+│   └── service.phase  ← PhaseExecutor interface + 9 implementations
+├── application
+│   ├── port.in        ← AnalysisPort (inbound)
+│   ├── port.out       ← LlmPort, ProjectSourcePort, CachePort, ReportPort
+│   └── service        ← AnalysisPipelineService (implements AnalysisPort)
+├── adapter
+│   ├── in.ui          ← Vaadin views (calls AnalysisPort)
+│   └── out
+│       ├── llm        ← LangChain4JLlmAdapter
+│       ├── project    ← FilesystemProjectAdapter, GitProjectAdapter
+│       ├── cache      ← FilesystemCacheAdapter
+│       └── report     ← AsciiDocReportAdapter
+└── infrastructure
+    └── config         ← AnalysisConfig (@ConfigMapping)
+----
+
+Dependency rule: arrows point inward.
+`adapter.*` depends on `application.port.*`; `application.*` depends on `domain.*`; `domain.*` depends on nothing outside itself.
+
+== Consequences
+
+* Every new LLM provider is a new `adapter.out.llm` class that implements `LlmPort` — no other files change (QG-1).
+* Domain unit tests instantiate `PhaseExecutor` with a `LlmPort` mock; no Quarkus context needed.
+* Increases the number of files and interfaces compared to a simple layered design; justified by the explicit variability requirements.
+* No risk items created by this decision.

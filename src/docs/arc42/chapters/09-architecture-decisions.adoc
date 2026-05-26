@@ -1,0 +1,57 @@
+= Architecture Decisions
+
+== ADR Index
+
+[cols="1,3,1,1", options="header"]
+|===
+| ADR | Title | Status | Date
+
+| link:../decisions/adr-001-quarkus.adoc[ADR-001]
+| Quarkus as Application Framework
+| Accepted
+| 2026-05-26
+
+| link:../decisions/adr-002-vaadin.adoc[ADR-002]
+| Vaadin Flow as Browser UI
+| Accepted
+| 2026-05-26
+
+| link:../decisions/adr-003-langchain4j.adoc[ADR-003]
+| LangChain4J for LLM Integration
+| Accepted
+| 2026-05-26
+
+| link:../decisions/adr-004-hexagonal-architecture.adoc[ADR-004]
+| Hexagonal Architecture (Ports & Adapters)
+| Accepted
+| 2026-05-26
+
+| link:../decisions/adr-005-docker-compose-profiles.adoc[ADR-005]
+| Docker Compose Profiles for LLM Provider Selection
+| Accepted
+| 2026-05-26
+
+| link:../decisions/adr-006-jooq-repository-pattern.adoc[ADR-006]
+| jOOQ in a Repository Pattern for Data Access
+| Accepted
+| 2026-05-26
+
+| link:../decisions/adr-007-postgresql.adoc[ADR-007]
+| PostgreSQL as Primary Database
+| Accepted
+| 2026-05-26
+
+| link:../decisions/adr-008-pgvector.adoc[ADR-008]
+| pgvector for Semantic Similarity Search in the RAG Knowledge Base
+| Accepted
+| 2026-05-26
+|===
+
+include::../decisions/adr-001-quarkus.adoc[leveloffset=+1]
+include::../decisions/adr-002-vaadin.adoc[leveloffset=+1]
+include::../decisions/adr-003-langchain4j.adoc[leveloffset=+1]
+include::../decisions/adr-004-hexagonal-architecture.adoc[leveloffset=+1]
+include::../decisions/adr-005-docker-compose-profiles.adoc[leveloffset=+1]
+include::../decisions/adr-006-jooq-repository-pattern.adoc[leveloffset=+1]
+include::../decisions/adr-007-postgresql.adoc[leveloffset=+1]
+include::../decisions/adr-008-pgvector.adoc[leveloffset=+1]

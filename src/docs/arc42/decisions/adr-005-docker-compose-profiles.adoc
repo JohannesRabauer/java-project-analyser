@@ -1,0 +1,77 @@
+= ADR-005: Docker Compose Profiles for LLM Provider Selection
+
+[cols="1,2"]
+|===
+| Status | Accepted
+| Date   | 2026-05-26
+|===
+
+== Context
+
+The application must support three deployment modes:
+
+. *Local* — all inference runs in a Docker-managed Ollama container; no external API calls.
+. *OpenAI* — inference calls the OpenAI API; Ollama is not needed.
+. *Anthropic* — inference calls the Anthropic API; Ollama is not needed.
+
+Users should activate a mode with a single command, without editing YAML files or maintaining multiple compose files.
+The selected mode must also configure the Quarkus application (which provider properties to activate).
+
+Options evaluated: multiple `docker-compose-*.yml` files, Docker Compose named profiles, Helm charts.
+
+== Pugh Matrix
+
+Baseline: multiple `docker-compose-*.yml` files.
+
+[cols="3,1,1,1", options="header"]
+|===
+| Criterion | Multiple files (baseline) | Profiles | Helm
+
+| Single-file maintenance
+| 0
+| +1
+| 0
+
+| One-command activation
+| 0
+| +1
+| 0
+
+| Appropriate infrastructure scope (local dev)
+| 0
+| +1
+| -1
+
+| Learning curve
+| 0
+| +1
+| -1
+
+| CI/CD integration simplicity
+| 0
+| +1
+| -1
+
+| *Total*
+| *0*
+| *+5*
+| *-3*
+|===
+
+== Decision
+
+Docker Compose named profiles (`--profile local`, `--profile openai`, `--profile anthropic`).
+
+Profiles keep all configuration in one `docker-compose.yml`.
+The `QUARKUS_PROFILE` environment variable is set to match the active Compose profile, so the Quarkus application automatically loads the corresponding `application-{profile}.properties` — no separate mapping layer needed.
+
+== Consequences
+
+* Adding a new LLM provider (e.g., Google Vertex AI) requires: one new Quarkus profile properties file + zero structural changes to `docker-compose.yml` (the `app` service entry does not change).
+* The `local` profile's Ollama container uses `nvidia` GPU device reservation.
+On hosts without an NVIDIA GPU, this block should be removed or the compose file should use a CPU-only Ollama image — document this in the project README.
+This contributes to R-004.
+* Docker Compose profiles require Compose v2 (`docker compose`, not `docker-compose`).
+This is captured in TC-02.
+* A `.env` file is the recommended way to set `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` locally without exposing secrets in shell history.
+The repository `.gitignore` must exclude `.env`.

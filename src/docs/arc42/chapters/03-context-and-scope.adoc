@@ -1,0 +1,115 @@
+= Context and Scope
+
+== Business Context
+
+The Java Project Analyser sits between a user who needs to understand an unfamiliar Java codebase and the LLM that produces the analysis.
+It abstracts away prompt engineering, chunking, caching, retry logic, embedding, vector storage, and report rendering.
+
+The system operates in two sequential modes:
+
+. **Analyse** — a ten-phase pipeline extracts knowledge from source code and indexes it into the RAG knowledge base.
+. **Query** — the user asks questions (risk analysis, documentation, bug finding, feature guidance) that are answered by combining semantic retrieval from the knowledge base with LLM generation.
+
+== System Context Diagram
+
+[plantuml, c4-context, svg]
+....
+@startuml
+!include <C4/C4_Context>
+LAYOUT_WITH_LEGEND()
+
+title System Context — Java Project Analyser
+
+Person(user, "Analyst / Developer", "Architect, Developer,\nTechnical Writer, or\nProject Manager")
+
+System(analyser, "Java Project Analyser", "Quarkus + Vaadin application.\nDrives a 10-phase LLM analysis pipeline,\nindexes results into a RAG knowledge base,\nand answers queries via retrieval-augmented generation.")
+
+SystemDb(postgres, "PostgreSQL + pgvector", "Stores analysis jobs, phase results,\nRAG chunks with embeddings,\nand query results.")
+
+System_Ext(ollama, "Ollama", "Local LLM server running\nopen-weight models\n(local profile only)")
+System_Ext(openai, "OpenAI API", "Cloud LLM + embedding service\n(openai profile)")
+System_Ext(anthropic, "Anthropic API", "Cloud LLM service\n(anthropic profile)")
+System_Ext(git, "Git Repository", "Remote source repository\n(optional — pull on request)")
+
+Rel(user, analyser, "Configures analysis;\nruns queries; views reports", "HTTPS — browser")
+Rel(analyser, postgres,   "Persists jobs, RAG chunks,\nquery results; runs similarity search", "JDBC")
+Rel(analyser, ollama,    "Phase prompts + embeddings", "HTTP :11434")
+Rel(analyser, openai,    "Phase prompts + embeddings", "HTTPS")
+Rel(analyser, anthropic, "Phase prompts", "HTTPS")
+Rel(analyser, git, "Clones repository\n(on demand)", "Git / HTTPS / SSH")
+@enduml
+....
+
+== External Systems
+
+[cols="1,2,3", options="header"]
+|===
+| System | Direction | Responsibility
+
+| PostgreSQL + pgvector
+| Internal (owned by this deployment)
+| Primary database.
+Stores analysis job metadata, LLM call logs, phase results, RAG chunks with vector embeddings, and query results.
+The pgvector extension enables cosine similarity search over stored embeddings (ADR-008).
+
+| Ollama
+| Outbound (local profile)
+| Runs open-weight LLMs (Llama 3, Mistral, nomic-embed-text, etc.) on the host machine.
+Receives phase prompts and embedding requests; returns structured text and float vectors.
+
+| OpenAI API
+| Outbound (openai profile)
+| Hosted GPT-4o / text-embedding-3-small or equivalent.
+Receives phase prompts and embedding requests; returns structured text and float vectors.
+
+| Anthropic API
+| Outbound (anthropic profile)
+| Hosted Claude 3.5 Sonnet or equivalent.
+Receives phase prompts; returns structured text.
+NOTE: Anthropic does not yet provide a general embedding endpoint; for this profile the system uses Ollama (locally) or a configurable secondary embedding provider for Phase 10.
+
+| Git Repository
+| Outbound (optional)
+| Remote source repository.
+Cloned to a temporary directory when the user provides a URL instead of a pre-mounted volume.
+
+| Source Project (Docker Volume)
+| Inbound (read-only)
+| The Java codebase being analysed.
+Mounted at `/workspace` inside the application container.
+|===
+
+== Technical Context
+
+[cols="2,1,3", options="header"]
+|===
+| Channel | Protocol | Notes
+
+| Browser ↔ Application
+| HTTP on port 8080
+| Vaadin Flow uses WebSocket for server-push progress updates during both the analysis pipeline and RAG indexing.
+
+| Application → PostgreSQL
+| JDBC (port 5432)
+| All persistent state: jobs, phase results, RAG chunks, query results. pgvector `<=>` operator for similarity queries.
+
+| Application → Ollama (LLM)
+| HTTP on port 11434
+| REST API of the Ollama server for chat and embedding calls.
+
+| Application → OpenAI
+| HTTPS on port 443
+| OpenAI Chat Completions API and Embeddings API.
+
+| Application → Anthropic
+| HTTPS on port 443
+| Anthropic Messages API.
+
+| Application → Git
+| Git over HTTPS or SSH
+| Delegated to `git clone`; credentials from the host environment.
+
+| Application → Workspace volume
+| POSIX filesystem
+| Read-only bind mount; no writes to the analysed project (BR-006).
+|===

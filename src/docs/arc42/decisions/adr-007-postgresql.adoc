@@ -1,0 +1,155 @@
+= ADR-007: PostgreSQL as Primary Database
+
+[cols="1,2"]
+|===
+| Status | Accepted
+| Date   | 2026-05-26
+|===
+
+== Context
+
+The application must persist analysis jobs, phase results, the LLM call log, and the Phase 9 knowledge graph (nodes and edges).
+
+Data characteristics:
+* `PhaseResult.content` is a JSON blob up to several MB per phase per job.
+* `LlmCall` is append-only; the log for a 500-class project may contain 50–200 entries.
+* The Phase 9 knowledge graph has variable depth: a small project produces a shallow tree; a large modular monolith may produce thousands of nodes and tens of thousands of edges.
+* All data is local to a single Docker host; no distributed consistency requirement.
+
+A graph database (Neo4j) is attractive for Phase 9 but would be a poor fit as the primary store for job and phase lifecycle data.
+An embedded database (H2) would avoid Docker service complexity but lacks JSONB and production-grade reliability.
+
+Options evaluated: PostgreSQL, H2 (embedded), MySQL/MariaDB, Neo4j.
+
+== Pugh Matrix
+
+Baseline: PostgreSQL.
+
+[cols="3,1,1,1,1", options="header"]
+|===
+| Criterion | PostgreSQL (baseline) | H2 | MySQL / MariaDB | Neo4j
+
+| JSONB storage and indexing for `PhaseResult`
+| 0
+| -1 (JSON as text only)
+| -1 (JSON without indexing)
+| -1 (property graph model, no JSONB)
+
+| Graph query support for Phase 9 knowledge graph
+| 0
+| -1
+| -1
+| +1 (native Cypher, graph algorithms)
+
+| ACID guarantees and crash recovery
+| 0
+| -1 (in-process; data lost if JVM crashes)
+| 0
+| 0
+
+| jOOQ open-source support (ADR-006)
+| 0
+| 0
+| 0
+| -1 (different paradigm; jOOQ not applicable)
+
+| Flyway schema migration support
+| 0
+| -1 (schema resets between runs)
+| 0
+| -1 (no standard migration tooling)
+
+| Official Docker image and Testcontainers module
+| 0
+| 0 (no Docker needed)
+| 0
+| +1 (testcontainers-neo4j)
+
+| Operational familiarity
+| 0
+| +1 (zero ops)
+| 0
+| -1
+
+| *Total*
+| *0*
+| *-3*
+| *-2*
+| *-1*
+|===
+
+== Decision
+
+PostgreSQL as the single primary database.
+
+JSONB eliminates the need for a separate document store to hold phase results.
+A `nodes` + `edges` table with JSONB properties covers the Phase 9 knowledge graph for typical project sizes.
+If graph traversal performance becomes a bottleneck at scale, Neo4j can be introduced alongside PostgreSQL as a secondary store for Phase 9 queries only — the `KnowledgeGraphRepository` port adapter is swappable without touching the pipeline (ADR-004, ADR-006).
+
+=== Docker Compose Addition
+
+A `postgres` service is added to `docker-compose.yml` and is active for all three profiles.
+
+[source,yaml]
+----
+  postgres:
+    image: postgres:17-alpine
+    profiles: [local, openai, anthropic]
+    environment:
+      POSTGRES_DB: analyser
+      POSTGRES_USER: analyser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-analyser}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analyser"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+----
+
+The `app` service gains `depends_on: postgres: condition: service_healthy`.
+
+=== Schema Management
+
+Flyway manages the schema under `src/main/resources/db/migration/`.
+On application startup, Quarkus triggers Flyway migration before the application becomes ready.
+jOOQ code generation runs against the migrated schema during the Maven `generate-sources` phase.
+
+=== Core Table Sketch
+
+[source,sql]
+----
+-- analysis_job: one row per analysis run
+analysis_job (id UUID PK, status, project_source JSONB, config JSONB,
+              created_at, started_at, completed_at)
+
+-- analysis_phase: one row per phase per job
+analysis_phase (id UUID PK, job_id FK, phase_id INT, status,
+                started_at, completed_at, chunk_count INT)
+
+-- phase_result: large JSON stored as JSONB
+phase_result (id UUID PK, phase_id FK, degraded BOOL,
+              content JSONB, raw_response TEXT)
+
+-- llm_call: append-only log
+llm_call (id UUID PK, job_id FK, phase_id FK, model, attempt_number,
+          prompt_tokens INT, completion_tokens INT, http_status INT,
+          duration_ms INT, timestamp TIMESTAMPTZ)
+
+-- knowledge_graph_node / _edge: Phase 9 output
+knowledge_graph_node (id UUID PK, job_id FK, type, name, properties JSONB)
+knowledge_graph_edge (id UUID PK, job_id FK, source_id FK, target_id FK,
+                      relation_type, properties JSONB)
+----
+
+== Consequences
+
+* PostgreSQL is an infrastructure dependency for all three Docker Compose profiles.
+The `app` container does not start until PostgreSQL passes its health check (R-006).
+* `POSTGRES_PASSWORD` must be set in `.env` for production deployments; the default value `analyser` is for local development only.
+The repository `.gitignore` must exclude `.env`.
+* JSONB `content` column in `phase_result` allows SQL queries like `content->>'executiveSummary'` — useful for building a job history browser in the Vaadin UI without loading the full report.
+* Neo4j is a valid future addition for Phase 9 alone.
+When that migration happens, it introduces a new `adapter.out.graph.Neo4jKnowledgeGraphAdapter` and leaves `AnalysisJobRepository` and `PhaseResultRepository` on PostgreSQL unchanged (R-007).
+* Flyway migration failures at startup block the application; a failed migration must be repaired before the container will become healthy.

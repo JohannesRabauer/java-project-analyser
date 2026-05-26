@@ -1,0 +1,187 @@
+= Pipeline State Machine
+:doctype: article
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectanchors:
+:icons: font
+
+== Purpose
+
+This document defines the lifecycle states of `AnalysisJob` and `AnalysisPhase`.
+Together they govern when phase execution starts, when the cache is written, and when a resume is possible.
+
+== AnalysisJob Status
+
+=== States
+
+[cols="1,3", options="header"]
+|===
+| State | Meaning
+
+| `CREATED`
+| Job has been initialised; input validation passed; execution has not started.
+
+| `RUNNING`
+| One or more phases are actively executing.
+
+| `COMPLETED`
+| All requested phases finished with status `COMPLETED` or `DEGRADED`; report has been generated.
+
+| `INTERRUPTED`
+| Process received SIGTERM or SIGINT; phase results up to and including the last completed phase are in the cache.
+
+| `FAILED`
+| A phase exhausted all retries and raised a non-recoverable error.
+Report was not generated.
+|===
+
+=== Transitions
+
+[cols="2,1,3", options="header"]
+|===
+| From | To | Trigger
+
+| `CREATED`
+| `RUNNING`
+| Phase 1 begins executing.
+
+| `RUNNING`
+| `COMPLETED`
+| Phase 9 (or the last requested phase) reaches `COMPLETED` or `DEGRADED` and the report is written.
+
+| `RUNNING`
+| `INTERRUPTED`
+| Process receives SIGTERM or SIGINT.
+
+| `RUNNING`
+| `FAILED`
+| A phase raises `PhaseExecutionException` after exhausting all retries.
+
+| `INTERRUPTED`
+| `RUNNING`
+| User invokes `resume` and phase execution restarts from the first incomplete phase.
+
+| `FAILED`
+| `RUNNING`
+| User invokes `resume` and at least one valid phase result exists in the cache.
+|===
+
+=== State Diagram
+
+[plantuml, job-state-machine, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 12
+
+[*] --> CREATED : job initialised
+
+CREATED --> RUNNING : phase 1 starts
+
+RUNNING --> COMPLETED : last phase done\nreport written
+RUNNING --> INTERRUPTED : SIGTERM / SIGINT
+RUNNING --> FAILED : retries exhausted
+
+INTERRUPTED --> RUNNING : resume
+FAILED --> RUNNING : resume (partial cache)
+
+COMPLETED --> [*]
+FAILED --> [*] : abandon
+@enduml
+....
+
+---
+
+== AnalysisPhase Status
+
+=== States
+
+[cols="1,3", options="header"]
+|===
+| State | Meaning
+
+| `PENDING`
+| Phase is queued but has not started.
+
+| `RUNNING`
+| LLM call(s) for this phase are in progress.
+
+| `COMPLETED`
+| Phase finished; result parsed and cached successfully.
+
+| `DEGRADED`
+| Phase finished, but the LLM response could not be parsed into the expected schema.
+A degraded result (raw response text) is cached.
+The pipeline continues to the next phase.
+
+| `FAILED`
+| All retries were exhausted without a usable response.
+Causes the job to transition to `FAILED`.
+
+| `SKIPPED`
+| Phase was present in the cache at resume time; execution was skipped.
+|===
+
+=== Transitions
+
+[cols="2,1,3", options="header"]
+|===
+| From | To | Trigger
+
+| `PENDING`
+| `RUNNING`
+| The preceding phase (or job start for Phase 1) completes successfully.
+
+| `RUNNING`
+| `COMPLETED`
+| LLM response parsed and validated against output schema; result written to cache.
+
+| `RUNNING`
+| `DEGRADED`
+| LLM response could not be parsed even after one clarification retry; raw response cached.
+
+| `RUNNING`
+| `FAILED`
+| All three retries failed with transient API errors.
+
+| `PENDING`
+| `SKIPPED`
+| A valid result for this phase already exists in the cache at resume time.
+|===
+
+=== State Diagram
+
+[plantuml, phase-state-machine, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 12
+
+[*] --> PENDING : phase enqueued
+
+PENDING --> RUNNING : preceding phase done
+PENDING --> SKIPPED : valid cache entry found at resume
+
+RUNNING --> COMPLETED : response parsed and cached
+RUNNING --> DEGRADED : schema parse failed after retry\nraw response cached
+RUNNING --> FAILED : retries exhausted
+
+COMPLETED --> [*]
+DEGRADED --> [*]
+SKIPPED --> [*]
+FAILED --> [*]
+@enduml
+....
+
+---
+
+== Invariants
+
+. A phase may only transition from `PENDING` to `RUNNING` if all phases with `phaseId < N` have status `COMPLETED`, `DEGRADED`, or `SKIPPED`. This enforces <<../business-rules.adoc#BR-001,BR-001>>.
+
+. A phase result must be written to the cache before the next phase transitions to `RUNNING`. This enforces <<../business-rules.adoc#BR-002,BR-002>>.
+
+. A `FAILED` phase prevents any subsequent phase from transitioning out of `PENDING`. The job transitions to `FAILED` immediately.
+
+. A `DEGRADED` phase does not block subsequent phases. The pipeline treats `DEGRADED` as a successful enough result to continue.

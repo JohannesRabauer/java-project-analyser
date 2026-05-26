@@ -1,0 +1,92 @@
+= UC-003: Configure the Analyser
+:doctype: article
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectanchors:
+:icons: font
+
+[cols="1,3"]
+|===
+| ID | UC-003
+| Level | User Goal
+| Primary Actor | User
+| Supporting Actors | None
+|===
+
+== Stakeholders and Interests
+
+[cols="1,3", options="header"]
+|===
+| Stakeholder | Interest
+
+| User
+| Sets up the analyser once so that subsequent `analyse` and `resume` invocations require no repeated flag passing.
+|===
+
+== Preconditions
+
+. The analyser is installed and `java-analyser` is on PATH.
+
+== Trigger
+
+The user invokes `java-analyser config <key> <value>` or manually edits a configuration file.
+
+== Main Success Scenario
+
+[cols="1,6", options="header"]
+|===
+| Step | Action
+
+| 1
+| The user provides one or more configuration key/value pairs via the `config` command.
+
+| 2
+| The system validates each value: API key is non-empty, model ID is a recognized value, paths are valid filesystem paths, format is one of `adoc`/`md`, batch size is a positive integer.
+
+| 3
+| The system writes the validated values to the user-level config file (`~/.java-analyser/config.yaml`), creating the file if it does not exist.
+
+| 4
+| The system confirms the saved keys to stdout and exits with code 0.
+|===
+
+== Extensions
+
+[cols="1,6", options="header"]
+|===
+| Condition | Handling
+
+| 2a. A configuration value fails validation.
+| System reports the specific key and the validation failure (e.g., "model 'xyz' is not a recognized model ID; accepted values: …") and exits with code 1.
+No values are written to the config file.
+
+| 3a. The config file location is not writable.
+| System reports the permission error with the full path and exits with code 1.
+
+| 3b. The user targets a project-level config (`--project` flag).
+| System writes to `.java-analyser.yaml` in the current working directory instead of the user-level file.
+|===
+
+== Postconditions
+
+Success::
+* The config file exists and contains the provided key/value pairs.
+* Subsequent `analyse` or `resume` invocations inherit the saved values (<<../business-rules.adoc#BR-014,BR-014>>).
+* Exit code is 0.
+
+Failure::
+* Config file is not written or is unchanged.
+* Exit code is 1.
+
+== Business Rules
+
+BR-011, BR-014
+
+== EARS Requirements
+
+When the user sets the `model` configuration key, the system shall validate the value against the list of supported model identifiers before writing the config file.
+
+If the user-level config directory does not exist, the system shall create it with appropriate permissions before writing the config file.
+
+When the user invokes `config --project`, the system shall write the project-level config file to the current working directory.

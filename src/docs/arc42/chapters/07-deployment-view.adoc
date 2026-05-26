@@ -1,0 +1,173 @@
+= Deployment View
+
+== Infrastructure Overview
+
+The application deploys as a Docker Compose stack on a single host.
+Three named profiles determine which LLM backend is active.
+All three share the same application container image.
+
+[plantuml, deployment-local, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 11
+
+node "Docker Host" {
+
+  package "docker compose --profile local" {
+    [Quarkus App\nport 8080] as App
+    [Ollama\nport 11434] as Ollama
+    database "workspace volume\n(read-only)" as WS
+    database "cache volume\n(read-write)" as Cache
+    database "ollama-models volume" as Models
+  }
+
+  App --> Ollama : HTTP :11434
+  App --> WS
+  App --> Cache
+  Ollama --> Models
+}
+
+actor Browser
+Browser --> App : HTTP :8080
+
+note right of Ollama
+  Active only with
+  --profile local
+end note
+@enduml
+....
+
+== Docker Compose Configuration
+
+[source,yaml]
+----
+# docker-compose.yml
+name: java-project-analyser
+
+services:
+
+  app:
+    build:
+      context: .
+      dockerfile: src/main/docker/Dockerfile.jvm
+    image: java-project-analyser:latest
+    profiles: [local, openai, anthropic]
+    ports:
+      - "8080:8080"
+    volumes:
+      - "${WORKSPACE_PATH:-./sample-workspace}:/workspace:ro"
+      - "${CACHE_PATH:-./analysis-cache}:/cache"
+    environment:
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - QUARKUS_PROFILE=${LLM_PROVIDER:-local}
+    depends_on:
+      ollama:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/q/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: [local]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  ollama-models:
+----
+
+== Profile Summary
+
+[cols="1,2,3", options="header"]
+|===
+| Profile | Active Services | LLM Provider
+
+| `local`
+| `app`, `ollama`
+| Ollama running locally inside the Docker network.
+The default model (`llama3.2` or as configured) is pulled on first run.
+
+| `openai`
+| `app` only
+| OpenAI API. Requires `OPENAI_API_KEY` in the environment or a `.env` file.
+
+| `anthropic`
+| `app` only
+| Anthropic API. Requires `ANTHROPIC_API_KEY` in the environment or a `.env` file.
+|===
+
+== How to Start Each Profile
+
+[source,shell]
+----
+# Local LLM (pulls model on first run — may take several minutes)
+docker compose --profile local up
+
+# OpenAI
+OPENAI_API_KEY=sk-… docker compose --profile openai up
+
+# Anthropic
+ANTHROPIC_API_KEY=sk-ant-… docker compose --profile anthropic up
+----
+
+== Volume Mount Reference
+
+[cols="2,1,3", options="header"]
+|===
+| Host Path (env var) | Container Path | Purpose
+
+| `$WORKSPACE_PATH` (default: `./sample-workspace`)
+| `/workspace`
+| Read-only bind-mount of the Java project to analyse.
+
+| `$CACHE_PATH` (default: `./analysis-cache`)
+| `/cache`
+| Phase result JSON files, LLM call log, and generated report.
+
+| Docker named volume `ollama-models`
+| `/root/.ollama`
+| Downloaded Ollama model weights — persisted across container restarts.
+|===
+
+== Quarkus-to-Docker-Compose Profile Mapping
+
+The `QUARKUS_PROFILE` environment variable is set to match the active Docker Compose profile.
+Quarkus uses this to activate the corresponding `application-{profile}.properties` file, which selects the LangChain4J provider:
+
+[source,properties]
+----
+# application-local.properties
+quarkus.langchain4j.chat-model.provider=ollama
+quarkus.langchain4j.ollama.base-url=${OLLAMA_BASE_URL:http://localhost:11434}
+quarkus.langchain4j.ollama.chat-model.model-id=llama3.2
+
+# application-openai.properties
+quarkus.langchain4j.chat-model.provider=openai
+quarkus.langchain4j.openai.api-key=${OPENAI_API_KEY}
+
+# application-anthropic.properties
+quarkus.langchain4j.chat-model.provider=anthropic
+quarkus.langchain4j.anthropic.api-key=${ANTHROPIC_API_KEY}
+----

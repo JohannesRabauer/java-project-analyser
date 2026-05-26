@@ -1,0 +1,154 @@
+= UC-002: Resume an Interrupted Analysis
+:doctype: article
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectanchors:
+:icons: font
+
+[cols="1,3"]
+|===
+| ID | UC-002
+| Level | User Goal
+| Primary Actor | User (same roles as UC-001)
+| Supporting Actors | LLM API (system actor)
+|===
+
+== Stakeholders and Interests
+
+[cols="1,3", options="header"]
+|===
+| Stakeholder | Interest
+
+| User
+| Recovers a failed or interrupted analysis without repeating work already done and paying for LLM calls that already succeeded.
+
+| LLM API provider
+| Only the remaining phases generate new API calls; completed phases are served from cache.
+|===
+
+== Preconditions
+
+. A previous analysis run was interrupted (process killed, LLM error, network failure) or completed only partially.
+. The cache directory from the previous run is accessible and contains at least one valid phase result file (<<../business-rules.adoc#BR-003,BR-003>>).
+. The same project source (local path or cloned repository) is still accessible.
+. A valid LLM API key is present in the configuration.
+
+== Trigger
+
+The user invokes `java-analyser resume <cache-dir>`.
+
+== Main Success Scenario
+
+[cols="1,6", options="header"]
+|===
+| Step | Action
+
+| 1
+| The user provides the cache directory path from the previous run and optional override flags.
+
+| 2
+| The system reads the cache directory, identifies which phase result files are present and valid, and determines the last successfully completed phase.
+
+| 3
+| The system validates that the project source referenced in the cache metadata is still accessible.
+
+| 4
+| The system skips all phases whose result files are already present in the cache (status `COMPLETED`).
+
+| 5
+| The system continues execution from the first incomplete phase, following the same logic as UC-001 steps 3–11.
+
+| 6
+| The system generates the final report and machine-readable artifacts, as in UC-001 step 12.
+
+| 7
+| The system writes a completion message to stdout listing output paths and exits with code 0.
+|===
+
+== Extensions
+
+[cols="1,6", options="header"]
+|===
+| Condition | Handling
+
+| 2a. Cache directory does not exist or contains no valid phase result files.
+| System reports that no recoverable state was found and exits with code 1.
+
+| 2b. Cache metadata identifies a different project source than the one currently at that path.
+| System warns the user of the mismatch and asks for explicit confirmation before proceeding (`--force` flag bypasses the prompt).
+
+| 3a. Project source is no longer accessible (path deleted, repository unreachable).
+| System reports the specific access failure and exits with code 2.
+
+| 5a–5c. Any phase fails during resumed execution.
+| Same handling as the corresponding extension in UC-001 (retries, degraded result, SIGTERM flush).
+|===
+
+== Postconditions
+
+Success::
+* Same as UC-001 success postconditions.
+* Phase result files from the original run are preserved unchanged.
+
+Failure::
+* Same as UC-001 failure postconditions.
+* Phase results that were valid before the resume remain intact in the cache.
+
+== Business Rules
+
+BR-001, BR-002, BR-003, BR-016
+
+== EARS Requirements
+
+When the user invokes the `resume` command, the system shall read the cache directory and report to stdout which phases were already completed and which will be executed.
+
+If a cache directory contains a phase result file that fails structural validation, the system shall skip that file, treat the phase as incomplete, and re-execute it.
+
+While re-executing phases after a resume, the system shall apply the same retry and chunking rules as during an initial analysis.
+
+== Activity Diagram
+
+[plantuml, uc-002-activity, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 12
+start
+
+:Receive cache directory path and optional flags;
+
+:Read cache directory;
+if (At least one valid phase result?) then (no)
+  :Report no recoverable state;
+  stop
+endif
+
+:Identify last completed phase N;
+:Report completed phases to stdout;
+
+:Validate project source still accessible;
+if (Source accessible?) then (no)
+  :Report access failure;
+  stop
+endif
+
+:Skip phases 1..N (load from cache);
+
+partition "Resume Phase Loop (N+1 — 9)" {
+  :Load next phase definition;
+  :Collect phase input from project source;
+  :Execute LLM call(s) per phase logic;
+  if (Phase succeeded?) then (no)
+    :Apply retry / degraded result logic (see UC-001);
+  endif
+  :Persist phase result to cache;
+}
+
+:Assemble final report from all phase results;
+:Emit dependency-graph.json and responsibility-map.json;
+:Write report file to output directory;
+:Write completion summary to stdout;
+stop
+@enduml
+....

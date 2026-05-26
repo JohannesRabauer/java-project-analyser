@@ -1,0 +1,84 @@
+= Glossary
+
+[cols="1,3", options="header"]
+|===
+| Term | Definition
+
+| Analysis Job
+| A single end-to-end run of the 9-phase pipeline for one Java project.
+Identified by a UUID; lifecycle tracked in `AnalysisJob`.
+
+| Analysis Phase
+| One of the nine sequential analysis steps (Application Purpose → … → Knowledge Graph).
+Each phase issues one or more LLM calls and produces a `PhaseResult`.
+
+| Cache Directory
+| A writable directory (Docker volume) where phase result JSON files, the LLM call log, and the final report are persisted.
+
+| Chunking
+| The process of splitting a phase's LLM context into smaller batches when the total token count would exceed the model's effective context window.
+See BR-005.
+
+| Docker Compose Profile
+| A named subset of services in `docker-compose.yml`, activated with `--profile <name>`.
+Profiles `local`, `openai`, and `anthropic` each wire a different LLM backend.
+
+| Degraded Phase
+| A phase that completed but whose LLM response could not be parsed into the expected JSON schema.
+The raw response is cached; the pipeline continues.
+
+| Hexagonal Architecture
+| An architectural style (also called Ports & Adapters) in which the application core depends only on interface definitions (ports), and all external concerns are implemented in adapters.
+See ADR-004.
+
+| LangChain4J
+| An open-source Java library that provides a unified API over multiple LLM providers (Ollama, OpenAI, Anthropic, and others).
+Integrated into Quarkus via the `quarkus-langchain4j` extension.
+
+| LLM (Large Language Model)
+| A neural network-based text generation model.
+In this project, any of: Ollama-hosted open-weight models, OpenAI GPT, or Anthropic Claude.
+
+| LlmPort
+| The outbound port interface that isolates the analysis pipeline from LLM-provider specifics.
+`executePrompt(PhasePrompt) : PhaseResponse`.
+
+| Ollama
+| An open-source LLM inference server that can run open-weight models (Llama 3, Mistral, Qwen, etc.) on consumer hardware.
+Packaged as a Docker image for the `local` profile.
+
+| Phase Executor
+| A CDI bean responsible for one analysis phase.
+Collects project context, fills the prompt template, calls `LlmPort`, and parses the response.
+
+| ProjectTree
+| The in-memory representation of a Java project's file structure: package tree, class metadata, build descriptor content, README text.
+
+| Prompt Template
+| A text file on the classpath (`src/main/resources/prompts/phase-N.txt`) that defines the system instructions and output schema for one analysis phase.
+
+| Quarkus
+| A Kubernetes-native Java framework with fast startup and low memory footprint.
+Chosen for its native Vaadin extension and CDI support.
+See ADR-001.
+
+| Quarkus Profile
+| A named configuration set within Quarkus (`application-{profile}.properties`).
+Maps 1:1 to a Docker Compose profile in this project.
+
+| Resume
+| The act of restarting an interrupted `AnalysisJob` from the last successfully completed phase, using the cached phase results.
+See UC-002.
+
+| STRIDE
+| A threat-modelling framework: Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege.
+Applied in section 8.1.
+
+| Vaadin Flow
+| A Java web framework that renders browser UIs from server-side Java code.
+Uses WebSocket for real-time server-push updates.
+See ADR-002.
+
+| Workspace Volume
+| A read-only Docker bind-mount (`/workspace` inside the container) that holds the Java project being analysed.
+|===

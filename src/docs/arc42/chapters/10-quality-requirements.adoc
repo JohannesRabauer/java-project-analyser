@@ -1,0 +1,116 @@
+= Quality Requirements
+
+== Quality Tree
+
+[cols="2,2,3", options="header"]
+|===
+| ISO 25010 Characteristic | Sub-characteristic | Relation to Chapter 1.2
+
+| Functional Suitability
+| Functional correctness
+| *Top goal QG-3* — report correctly identifies stack and architecture.
+
+| Performance Efficiency
+| Time behaviour
+| *Top goal QG-4* — 500-class project in ≤ 10 minutes.
+
+| Maintainability
+| Modifiability
+| *Top goal QG-1* — LLM provider swap with zero code changes.
+
+| Portability
+| Deployability
+| *Top goal QG-2* — one-command local start in ≤ 5 minutes.
+
+| Reliability
+| Recoverability
+| Derived — interrupted analysis resumes from cache without re-spending tokens.
+
+| Security
+| Confidentiality
+| Derived — cloud profile requires explicit operator consent before transmitting source code.
+
+| Usability
+| Learnability
+| Derived — analyst with no prior knowledge of the tool can start an analysis within 10 minutes.
+
+| Compatibility
+| Interoperability
+| Derived — any LLM provider supported by LangChain4J can be plugged in without code changes.
+|===
+
+== Quality Scenarios
+
+Each scenario uses the six-part form: Source, Stimulus, Artifact, Environment, Response, Response Measure.
+
+=== QS-01 — Modifiability (concretises QG-1)
+
+[cols="1,3"]
+|===
+| Source | Developer maintaining the application.
+| Stimulus | Business requires switching from OpenAI to Anthropic Claude without a code release.
+| Artifact | Docker Compose stack and Quarkus configuration.
+| Environment | Production environment; no rebuild of the container image.
+| Response | Developer sets `ANTHROPIC_API_KEY` and restarts with `--profile anthropic`; all subsequent analyses use Anthropic.
+| Response Measure | Zero source code changes. Configuration change and container restart complete in < 5 minutes.
+|===
+
+=== QS-02 — Deployability (concretises QG-2)
+
+[cols="1,3"]
+|===
+| Source | Developer new to the project.
+| Stimulus | Clone the repository on a fresh machine and run the application.
+| Artifact | Docker Compose setup, Ollama model pull.
+| Environment | Development machine with Docker Engine installed; no pre-downloaded model weights.
+| Response | `docker compose --profile local up` starts both containers; Ollama pulls the configured model; application becomes available at http://localhost:8080.
+| Response Measure | Application ready within 5 minutes of command (model download not counted if weights are already cached).
+|===
+
+=== QS-03 — Functional Correctness (concretises QG-3)
+
+[cols="1,3"]
+|===
+| Source | User (Architect).
+| Stimulus | Request analysis of the public Spring PetClinic project (≈ 50 production classes, well-known stack).
+| Artifact | Generated analysis report.
+| Environment | `openai` profile; GPT-4o.
+| Response | Report produced with no degraded phases.
+| Response Measure | Report correctly identifies: Spring Boot, Spring MVC, Thymeleaf, JPA/Hibernate; architectural style classified as Layered Architecture; zero hallucinated class names.
+|===
+
+=== QS-04 — Time Behaviour (concretises QG-4)
+
+[cols="1,3"]
+|===
+| Source | User.
+| Stimulus | Request analysis of a project with 500 production classes.
+| Artifact | Full 9-phase analysis pipeline.
+| Environment | `anthropic` profile; Claude 3.5 Sonnet; typical API response time 3–8 s per call; batch size 50.
+| Response | All 9 phases complete; report file written.
+| Response Measure | Total elapsed time ≤ 600 seconds; no individual phase exceeds 180 seconds.
+|===
+
+=== QS-05 — Recoverability (derived)
+
+[cols="1,3"]
+|===
+| Source | System (network layer).
+| Stimulus | Network failure kills the application process mid-analysis after phase 4 completes.
+| Artifact | Cache volume.
+| Environment | Analysis running against a 200-class project.
+| Response | User resumes with the "Resume" button in the Vaadin UI; pipeline restarts from phase 5.
+| Response Measure | Phases 1–4 are not re-executed; no additional LLM tokens are spent for those phases; full report produced in ≤ 60% of the original analysis time.
+|===
+
+=== QS-06 — Confidentiality (derived)
+
+[cols="1,3"]
+|===
+| Source | External operator.
+| Stimulus | Operator starts the application with `--profile openai` on a project containing proprietary code.
+| Artifact | Vaadin UI analysis start flow.
+| Environment | Production; cloud profile active.
+| Response | UI displays a consent notice before any LLM call is made; operator must click "I understand" to proceed.
+| Response Measure | Zero LLM API calls are made before the consent is confirmed.
+|===

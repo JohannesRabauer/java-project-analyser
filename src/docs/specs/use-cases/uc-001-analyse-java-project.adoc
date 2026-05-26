@@ -1,0 +1,219 @@
+= UC-001: Analyse a Java Project
+:doctype: article
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectanchors:
+:icons: font
+
+[cols="1,3"]
+|===
+| ID | UC-001
+| Level | User Goal
+| Primary Actor | User (Software Architect, Onboarding Developer, Technical Writer, Project Manager)
+| Supporting Actors | LLM API (system actor)
+|===
+
+== Stakeholders and Interests
+
+[cols="1,3", options="header"]
+|===
+| Stakeholder | Interest
+
+| User
+| Receives a complete, accurate knowledge model of an unfamiliar Java project without spending days reading source code.
+
+| Development team of the analysed project
+| Their codebase is represented correctly; the tool does not modify or expose their code externally.
+
+| LLM API provider
+| API is called within rate limits and context constraints.
+|===
+
+== Preconditions
+
+. A Java project exists at the specified path, or the repository URL is accessible over the network.
+. A valid LLM API key is present in the configuration (<<../business-rules.adoc#BR-014,BR-014>>).
+. The output directory and cache directory are writable (created if absent).
+
+== Trigger
+
+The user invokes `java-analyser analyse <project-path-or-url>`.
+
+== Main Success Scenario
+
+[cols="1,6", options="header"]
+|===
+| Step | Action
+
+| 1
+| The user provides a project path or repository URL and optional configuration flags.
+
+| 2
+| The system validates the input: project exists and is readable, build descriptor (`pom.xml` or `build.gradle`) is present, API key is configured, output and cache directories are writable.
+
+| 3
+| The system executes Phase 1 (Application Purpose Analysis): reads build descriptors, README files, and main entry points; submits context to the LLM; receives and parses the structured result; persists the phase result to the cache.
+
+| 4
+| The system executes Phase 2 (Module Analysis): reads multi-module build structure and inter-module dependency declarations; submits per-module context to the LLM; caches the result.
+
+| 5
+| The system executes Phase 3 (Package Analysis): traverses `src/main/java`; derives package roles from naming, annotation counts, and import relationships; submits per-package context to the LLM; caches the result.
+
+| 6
+| The system executes Phase 4 (Class Analysis): reads all `.java` files under `src/main/java`; submits class metadata to the LLM in batches when necessary (<<../business-rules.adoc#BR-005,BR-005>>); caches the result.
+
+| 7
+| The system executes Phase 5 (Dependency Analysis): resolves the dependency tree via the build tool (<<../business-rules.adoc#BR-010,BR-010>>); categorises dependencies; submits the inventory to the LLM; caches the result.
+
+| 8
+| The system executes Phase 6 (Architecture Analysis): synthesises findings from Phases 1–5; submits the combined structural model to the LLM; caches the result.
+
+| 9
+| The system executes Phase 7 (Testing Analysis): traverses `src/test/java`; classifies test classes by category; maps test subjects to production classes; submits the test inventory to the LLM; caches the result.
+
+| 10
+| The system executes Phase 8 (External Interaction Analysis): identifies REST controllers, message listeners, scheduled methods, and outbound client beans; submits the interaction map to the LLM; caches the result.
+
+| 11
+| The system executes Phase 9 (System Knowledge Graph): assembles all phase outputs into a unified model; produces the containment hierarchy, dependency graph, architecture graph, integration graph, and responsibility map.
+
+| 12
+| The system generates the final report in the configured format (AsciiDoc by default) and writes `dependency-graph.json` and `responsibility-map.json` to the output directory (<<../business-rules.adoc#BR-012,BR-012>>).
+
+| 13
+| The system executes Phase 10 (RAG Knowledge Base Indexing): chunks all phase results, requests embeddings from the configured embedding model, and persists each chunk with its vector to the `rag_chunks` table in PostgreSQL (<<../business-rules.adoc#BR-017,BR-017>>, <<../business-rules.adoc#BR-018,BR-018>>).
+The analysis job status is updated to `INDEXED` in the database.
+
+| 14
+| The system emits a progress notification that the knowledge base is ready and the four query capabilities (UC-004 through UC-007) are now available for this job.
+
+| 15
+| The system writes a completion message to the UI listing the output file paths and the job ID, and exits the pipeline with status `INDEXED`.
+|===
+
+== Extensions
+
+[cols="1,6", options="header"]
+|===
+| Condition | Handling
+
+| 2a. Project path does not exist or is not readable.
+| System writes an error to stderr and exits with code 2.
+
+| 2b. No `pom.xml` or `build.gradle` found at the project root.
+| System reports that no Java build structure was detected and exits with code 2.
+
+| 2c. LLM API key is not configured.
+| System reports the missing configuration (names the expected key/file) and exits with code 1.
+
+| 2d. Remote repository URL is provided but `git` is not on PATH (<<../business-rules.adoc#BR-015,BR-015>>).
+| System reports the missing `git` dependency and exits with code 1.
+
+| 3–11a. LLM API call fails with a transient error.
+| System retries up to three times with exponential backoff (<<../business-rules.adoc#BR-016,BR-016>>).
+If all retries fail, the system caches the failure state, writes the error to stderr, and exits with code 3.
+
+| 3–11b. LLM response cannot be parsed into the expected structure.
+| System retries the call once with a clarifying prompt.
+If the retry also fails, the system records the phase as `DEGRADED` with the raw LLM response attached, continues to the next phase, and notes the degradation in the final report.
+
+| 6a. Project has more than 500 production classes (<<../business-rules.adoc#BR-005,BR-005>>).
+| System applies chunked batching for Phase 4, grouping classes by package. Each chunk is a separate LLM call. All chunk results are merged before caching.
+
+| 7a. Build tool dependency resolution fails (<<../business-rules.adoc#BR-010,BR-010>>).
+| System falls back to parsing the build descriptor directly and records the fallback in the report.
+
+| Any step. User sends SIGTERM or SIGINT.
+| System flushes all completed phase results to the cache directory before terminating.
+The analysis can be resumed with UC-002.
+|===
+
+== Postconditions
+
+Success::
+* Report file (`report.adoc` or `report.md`) exists in the output directory.
+* `dependency-graph.json` and `responsibility-map.json` exist in the output directory.
+* `llm-calls.jsonl` (all LLM call logs) exists in the cache directory.
+* All ten phase result files (`phase-1-result.json` … `phase-9-result.json`, plus `phase-10-index-summary.json`) exist in the cache directory.
+* The analysis job row in the database has status `INDEXED`.
+* All phase result chunks are stored in the `rag_chunks` table.
+* The four query capabilities (UC-004 through UC-007) are available for the job in the Vaadin UI.
+
+Failure::
+* Exit code is non-zero.
+* At least one phase result file exists in the cache directory for any phase that completed before the failure.
+* An error message describing the failure is written to stderr.
+* If the failure occurred during Phase 10, Phases 1–9 results are still accessible; the user can re-trigger indexing separately.
+
+== Business Rules
+
+BR-001, BR-002, BR-004, BR-005, BR-006, BR-007, BR-008, BR-009, BR-010, BR-011, BR-012, BR-013, BR-015, BR-016, BR-017, BR-018
+
+== EARS Requirements
+
+When the user invokes the `analyse` command, the system shall validate all inputs before executing any analysis phase.
+
+While an analysis phase is executing, the system shall write progress updates to stdout at least once every 10 seconds.
+
+When a phase completes successfully, the system shall persist its result to the cache directory before starting the next phase.
+
+If the estimated prompt token count for a phase exceeds the model's effective context window, the system shall split the phase input into chunks and execute one LLM call per chunk.
+
+When all nine phases complete, the system shall generate the final report and machine-readable artifacts before exiting.
+
+If the analysis process receives SIGTERM or SIGINT, the system shall flush completed phase results to the cache directory and exit with code 130.
+
+== Activity Diagram
+
+[plantuml, uc-001-activity, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 12
+start
+
+:Receive project path or URL and flags;
+
+:Validate input;
+if (Input valid?) then (no)
+  :Write error to stderr;
+  stop
+endif
+
+if (Remote URL?) then (yes)
+  :Clone repository to temp directory;
+endif
+
+partition "Phase Loop (1 — 9)" {
+  :Load next phase definition;
+  :Collect phase input from project source;
+  if (Tokens exceed context window?) then (yes)
+    :Split input into chunks;
+    :Execute LLM call per chunk;
+    :Merge chunk results;
+  else (no)
+    :Execute single LLM call;
+  endif
+  if (LLM call succeeded?) then (no)
+    if (Retries remaining?) then (yes)
+      :Wait (exponential backoff);
+      :Retry LLM call;
+    else (no)
+      :Mark phase FAILED;
+      :Flush cache;
+      stop
+    endif
+  endif
+  :Parse structured phase result;
+  :Persist phase result to cache;
+}
+
+:Assemble final report from all phase results;
+:Emit dependency-graph.json and responsibility-map.json;
+:Write report file to output directory;
+:Write completion summary to stdout;
+stop
+@enduml
+....

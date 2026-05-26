@@ -1,0 +1,24 @@
+= Java Project Analyser — Architecture Documentation (arc42)
+Johannes Rabauer <rabauer.dev@gmail.com>
+v1.0, 2026-05-26
+:doctype: book
+:toc: left
+:toclevels: 3
+:sectnums:
+:sectanchors:
+:icons: font
+:source-highlighter: rouge
+:imagesdir: .
+
+include::chapters/01-introduction-and-goals.adoc[leveloffset=+1]
+include::chapters/02-constraints.adoc[leveloffset=+1]
+include::chapters/03-context-and-scope.adoc[leveloffset=+1]
+include::chapters/04-solution-strategy.adoc[leveloffset=+1]
+include::chapters/05-building-block-view.adoc[leveloffset=+1]
+include::chapters/06-runtime-view.adoc[leveloffset=+1]
+include::chapters/07-deployment-view.adoc[leveloffset=+1]
+include::chapters/08-crosscutting-concepts.adoc[leveloffset=+1]
+include::chapters/09-architecture-decisions.adoc[leveloffset=+1]
+include::chapters/10-quality-requirements.adoc[leveloffset=+1]
+include::chapters/11-risks-and-technical-debt.adoc[leveloffset=+1]
+include::chapters/12-glossary.adoc[leveloffset=+1]

@@ -1,0 +1,63 @@
+= Constraints
+
+== Technical Constraints
+
+[cols="1,3,2", options="header"]
+|===
+| ID | Constraint | Rationale
+
+| TC-01
+| JVM 21 or later.
+| Quarkus 3.x requires Java 17+; virtual threads (used for non-blocking LLM calls) require 21+.
+
+| TC-02
+| Docker Engine and Docker Compose v2 required for deployment.
+| All runtime infrastructure (application, optional Ollama) runs in Docker containers.
+
+| TC-03
+| At least one LLM provider must be reachable at startup.
+| The application fails fast on startup if no configured provider responds to a health check.
+
+| TC-04
+| Source project must be accessible as a local filesystem path.
+| Analysis reads files statically; the project is either mounted via Docker volume or cloned to a temporary directory.
+
+| TC-05
+| `git` must be on PATH when Git-URL input is used.
+| The application delegates repository cloning to the host-installed git binary (BR-015).
+|===
+
+== Organizational Constraints
+
+[cols="1,3", options="header"]
+|===
+| ID | Constraint
+
+| OC-01
+| Architecture documentation follows arc42; diagrams are PlantUML (C4 via the standard library `<C4/…>` — never remote URLs).
+
+| OC-02
+| Commits follow Conventional Commits; branches follow Trunk-Based Development.
+
+| OC-03
+| All runtime dependencies must be open-source or have a license compatible with distribution.
+
+| OC-04
+| Source code of the analysed project is never persisted by the tool beyond the lifetime of the analysis run.
+|===
+
+== Regulatory / Privacy Constraints
+
+[cols="1,3", options="header"]
+|===
+| ID | Constraint
+
+| RC-01
+| When a cloud LLM profile (`openai`, `anthropic`) is active, the full source code of the analysed project is transmitted to that provider's API.
+The operator is responsible for ensuring they have the right to do so.
+The Vaadin UI must display a clear notice before the first analysis run in a cloud profile.
+
+| RC-02
+| The application stores no data outside the configured `cacheDir` and `outputDir`.
+No telemetry, no remote logging, no analytics.
+|===

@@ -1,0 +1,112 @@
+= ADR-006: jOOQ in a Repository Pattern for Data Access
+
+[cols="1,2"]
+|===
+| Status | Accepted
+| Date   | 2026-05-26
+|===
+
+== Context
+
+The hexagonal architecture (ADR-004) requires that domain objects carry no persistence annotations.
+All database access lives exclusively in the `adapter.out` layer.
+
+The application stores five entity types: `AnalysisJob`, `AnalysisPhase`, `PhaseResult` (large JSON blob), `LlmCall` (append-only log), and `AnalysisReport`.
+Phase 9 also produces a knowledge graph (nodes and edges) whose queries may eventually outgrow simple foreign-key joins.
+
+We need a data-access strategy that:
+* keeps `@Entity`, `@Column`, and similar annotations out of the domain model,
+* produces type-safe queries that fail at compile time if the schema changes,
+* handles complex SQL (JSONB queries on `PhaseResult`, CTE-based graph walks),
+* fits naturally behind a repository interface (outbound port).
+
+Options evaluated: jOOQ, JPA/Hibernate, MyBatis, raw JDBC.
+
+== Pugh Matrix
+
+Baseline: jOOQ.
+
+[cols="3,1,1,1,1", options="header"]
+|===
+| Criterion | jOOQ (baseline) | JPA/Hibernate | MyBatis | Raw JDBC
+
+| Type-safe SQL DSL (compile-time query verification)
+| 0
+| -1 (JPQL/HQL, not SQL)
+| -1 (SQL in XML/annotations)
+| -1
+
+| Schema-first code generation
+| 0
+| -1 (entity-first, not schema-first)
+| -1
+| -1
+
+| Domain model stays annotation-free
+| 0
+| -1 (`@Entity` on domain objects)
+| 0
+| 0
+
+| Complex SQL (JSONB queries, CTEs, window functions)
+| 0
+| -1 (requires native queries)
+| 0
+| 0
+
+| Quarkus integration (`quarkus-jooq` extension)
+| 0
+| +1 (quarkus-hibernate-orm is first-class)
+| 0
+| 0
+
+| Verbosity for simple CRUD
+| 0
+| +1 (declarative)
+| 0
+| -1
+
+| *Total*
+| *0*
+| *-3*
+| *-2*
+| *-3*
+|===
+
+== Decision
+
+jOOQ with a repository pattern.
+
+Each outbound port that touches the database is implemented by a jOOQ-backed repository class in `adapter.out.persistence`.
+The jOOQ code generator produces type-safe `Record` classes from the PostgreSQL schema (via a Flyway-managed schema).
+These generated records live only in the adapter layer and are never exposed to the domain.
+All domain-to-record and record-to-domain mapping is the sole responsibility of the adapter class.
+
+This combination directly enforces the ADR-004 dependency rule: the domain model has zero knowledge of jOOQ, JDBC, or SQL.
+
+=== Repository Structure
+
+[source]
+----
+adapter.out.persistence
+├── AnalysisJobRepository      implements CachePort (job + phase lifecycle)
+├── LlmCallRepository          implements LlmCallLogPort (append-only)
+├── ReportRepository           (stores report metadata)
+└── KnowledgeGraphRepository   (Phase 9 nodes + edges)
+
+generated.jooq                 (jOOQ codegen output — never hand-edited)
+├── tables/
+├── tables.records/
+└── Keys, Indexes, ...
+----
+
+== Consequences
+
+* The jOOQ code generator must run after every Flyway migration.
+The Maven build runs `jooq-codegen-maven` in the `generate-sources` phase after `flyway:migrate` in the `initialize` phase.
+* jOOQ's open-source edition covers PostgreSQL at no cost; no commercial license is required.
+* JPA is not in the dependency tree.
+`quarkus-hibernate-orm` is absent; there is no second-level cache, no lazy-loading, and no session-scoped entity manager to manage.
+Developers must write explicit SQL — this is intentional and explicit.
+* Adding a new query requires writing a jOOQ DSL expression; the compiler catches schema drift immediately after regeneration.
+* If Phase 9 knowledge graph queries eventually require multi-hop graph traversal at scale, the `KnowledgeGraphRepository` can be backed by Neo4j (a separate adapter implementing the same port) without any change to the domain or pipeline (R-007).

@@ -1,0 +1,77 @@
+= ADR-001: Quarkus as Application Framework
+
+[cols="1,2"]
+|===
+| Status | Accepted
+| Date   | 2026-05-26
+|===
+
+== Context
+
+The application needs a Java framework for a server-side web application with a browser UI.
+Key constraints: Docker-native deployment, CDI for dependency injection, first-class support for the chosen UI framework (Vaadin), and the ability to run non-blocking I/O for concurrent LLM calls.
+
+Options evaluated: Spring Boot 3, Quarkus 3, Micronaut 4.
+
+== Pugh Matrix
+
+Baseline: Spring Boot.
+
+[cols="3,1,1,1", options="header"]
+|===
+| Criterion | Spring Boot (baseline) | Quarkus | Micronaut
+
+| Container image startup time
+| 0
+| +1
+| +1
+
+| Memory footprint (JVM mode)
+| 0
+| +1
+| +1
+
+| Native image support (GraalVM)
+| 0
+| +1
+| 0
+
+| Vaadin integration (extension / starter)
+| 0
+| +1
+| -1
+
+| CDI standard (JSR-365) compliance
+| 0
+| +1
+| -1
+
+| Community size / maturity
+| 0
+| 0
+| -1
+
+| Dev Services (in-container test doubles)
+| 0
+| +1
+| 0
+
+| *Total*
+| *0*
+| *+6*
+| *-1*
+|===
+
+== Decision
+
+Quarkus 3.
+
+Quarkus has a mature `vaadin-quarkus-extension` that enables Vaadin Flow in the Quarkus CDI container, which no other lightweight framework matches.
+Its Dev Services provide zero-config test doubles for databases and external services, which simplifies integration testing of the cache and project-source adapters.
+
+== Consequences
+
+* JVM 21 is required (TC-01).
+* Developers must learn Quarkus CDI semantics (e.g., `@ApplicationScoped` vs. `@RequestScoped` in a push-based Vaadin session).
+* The `vaadin-quarkus-extension` is a community extension; version pinning is required to avoid compatibility breaks (R-002).
+* Native image compilation is possible but not a first-priority goal; JVM mode is the default deployment target.

@@ -1,0 +1,105 @@
+= UC-007: LLM-Assisted Feature Implementation Guidance
+:doctype: article
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectanchors:
+:icons: font
+
+[cols="1,3"]
+|===
+| ID | UC-007
+| Level | User Goal
+| Primary Actor | User (Developer, Software Architect)
+| Supporting Actors | LLM API (system actor)
+| Precedes | —
+| Follows | UC-001 (analysis job must be `INDEXED`)
+|===
+
+== Stakeholders and Interests
+
+[cols="1,3", options="header"]
+|===
+| Stakeholder | Interest
+
+| User
+| Receives concrete, codebase-grounded guidance on where and how to implement a new feature — reducing the time spent exploring the code structure before writing a single line.
+
+| Development team of the analysed project
+| Suggested implementation paths follow the conventions and patterns already present in their codebase.
+|===
+
+== Preconditions
+
+. A completed analysis job exists with status `INDEXED` (UC-001 + Phase 10 completed).
+. The user has a concrete description of a feature to implement.
+
+== Trigger
+
+The user selects **Feature Assistance** from the query capability menu, enters a natural-language description of the desired feature, optionally scopes the query to a specific module, and presses **Get Guidance**.
+
+== Main Success Scenario
+
+[cols="1,6", options="header"]
+|===
+| Step | Action
+
+| 1
+| The user enters a natural-language feature description (e.g., "Add an endpoint that exports the order history as a CSV file") and optionally selects a target module.
+
+| 2
+| The system embeds the feature description into a query vector.
+
+| 3
+| The system retrieves the top-K knowledge base chunks most relevant to the feature (architecture context, similar patterns, affected modules and classes — <<../business-rules.adoc#BR-021,BR-021>>, <<../business-rules.adoc#BR-022,BR-022>>).
+
+| 4
+| The system submits the retrieved chunks together with the feature description to the LLM using a feature-guidance prompt.
+
+| 5
+| The LLM returns a structured JSON implementation plan covering entry points, design patterns to follow, integration points, suggested class names, and potential risks.
+
+| 6
+| The system validates, persists, and renders the implementation plan in the browser.
+Each recommended class, pattern, or integration point is linked to its knowledge base entry.
+
+| 7
+| The user can refine the feature description or narrow the scope and re-query to iterate on the plan.
+|===
+
+== Extensions
+
+[cols="1,6", options="header"]
+|===
+| Condition | Handling
+
+| 3a. Similarity search returns fewer than 3 chunks above the threshold.
+| System warns the user that limited knowledge base context was found and the plan may be less codebase-specific; still proceeds with the available chunks.
+
+| 4–5a. LLM call fails after retries.
+| System shows an error and presents the retrieved raw chunks as fallback context.
+
+| 1a. The user selects a target module that does not exist in the knowledge base.
+| System reports that the module was not found in the analysis results and prompts the user to choose a known module from the dropdown.
+|===
+
+== Postconditions
+
+Success::
+* A feature implementation plan is persisted in `query_results` and rendered in the browser.
+* The plan is exportable as AsciiDoc or Markdown.
+
+Failure::
+* An error is shown; the raw retrieved chunks remain visible for manual review.
+
+== Business Rules
+
+BR-017, BR-018, BR-021, BR-022
+
+== EARS Requirements
+
+When the user requests feature guidance, the system shall retrieve both architectural context and relevant class-level knowledge base chunks before making the LLM call.
+
+When the LLM recommends a new class name, the system shall verify that the name follows the naming conventions observed in Phase 4 and note any deviation.
+
+When the user exports the feature plan, the system shall include in the document header the job ID, analysis timestamp, model identifier, and plan generation timestamp.

@@ -1,0 +1,378 @@
+= Building Block View
+
+== Level 1 — System as White Box
+
+The Quarkus application is the single deployable unit.
+External systems on its boundary match exactly the systems defined in <<Context and Scope>>.
+
+[plantuml, c4-container, svg]
+....
+@startuml
+!include <C4/C4_Container>
+LAYOUT_WITH_LEGEND()
+
+title Container View — Java Project Analyser
+
+Person(user, "Analyst / Developer")
+
+System_Boundary(compose, "Docker Compose stack") {
+  Container(app, "Java Project Analyser", "Quarkus 3 / JVM 21",
+    "Hosts Vaadin UI, analysis pipeline,\nRAG indexing, query capabilities,\nand all outbound adapters.")
+  ContainerDb(postgres, "PostgreSQL + pgvector", "pgvector/pgvector:pg17",
+    "Stores analysis jobs, phase results,\nRAG chunks + embeddings,\nquery results.\nFlyway-managed schema.")
+  ContainerDb(workspace, "Workspace Volume", "Docker bind-mount (read-only)",
+    "Mounted Java project.\n/workspace inside the container.")
+  ContainerDb(cache, "Cache Volume", "Docker bind-mount (read-write)",
+    "Phase results, LLM call log,\ngenerated report.")
+  Container(ollama, "Ollama", "ollama/ollama image\n(local profile only)",
+    "Serves open-weight LLM and\nembedding models over HTTP :11434.")
+}
+
+System_Ext(openai,    "OpenAI API",    "Cloud LLM + embeddings (openai profile)")
+System_Ext(anthropic, "Anthropic API", "Cloud LLM (anthropic profile)")
+System_Ext(git,       "Git Repository","Remote source (optional)")
+
+Rel(user, app, "Browser", "HTTP :8080")
+Rel(app, postgres,  "Jobs, RAG chunks, query results", "JDBC :5432")
+Rel(app, workspace, "Reads project files", "POSIX / read-only")
+Rel(app, cache,     "Reads/writes phase results and report", "POSIX")
+Rel(app, ollama,    "Phase prompts + embeddings (local)", "HTTP :11434")
+Rel(app, openai,    "Phase prompts + embeddings (openai)", "HTTPS")
+Rel(app, anthropic, "Phase prompts (anthropic)", "HTTPS")
+Rel(app, git, "git clone (on demand)", "Git")
+@enduml
+....
+
+=== Contained Building Blocks
+
+[cols="2,4,2", options="header"]
+|===
+| Building Block | Responsibility | Source Location
+
+| Java Project Analyser (app)
+| Orchestrates the 10-phase analysis pipeline; serves the Vaadin UI; bridges all outbound ports; hosts query capabilities.
+| `src/main/java/dev/analyser/`
+
+| PostgreSQL + pgvector
+| Primary database: analysis jobs, LLM call logs, RAG chunks with vector embeddings, query results.
+Cosine similarity search via `<=>` operator (ADR-008).
+| `pgvector/pgvector:pg17` Docker image; schema in `src/main/resources/db/migration/`.
+
+| Workspace Volume
+| Read-only bind-mount of the Java project being analysed.
+| Docker volume — path configured via `WORKSPACE_PATH` env var.
+
+| Cache Volume
+| Stores phase result JSON files, the LLM call JSONL log, and the finished report.
+| Docker volume — path configured via `CACHE_PATH` env var.
+
+| Ollama
+| Local LLM inference server for both chat and embedding models; active only when the `local` Docker Compose profile is used.
+| `ollama/ollama` Docker image.
+|===
+
+---
+
+== Level 2 — Quarkus Application as White Box
+
+The application follows Hexagonal Architecture (Ports & Adapters).
+The dependency arrow always points inward: adapters depend on ports; ports depend on nothing outside the application layer.
+Domain services have zero framework imports.
+
+[plantuml, c4-component, svg]
+....
+@startuml
+!include <C4/C4_Component>
+LAYOUT_WITH_LEGEND()
+
+title Component View — Quarkus Application
+
+Container_Boundary(app, "Java Project Analyser") {
+
+  ' ── Inbound adapters ──────────────────────────────────────
+  Component(ui, "Vaadin UI",
+    "Vaadin Flow",
+    "Five views:\nAnalysisView, ProgressView, ReportView,\nQueryView, QueryResultView.\nCalls AnalysisPort and QueryPort.")
+
+  ' ── Application services ──────────────────────────────────
+  Component(pipeline, "Analysis Pipeline Service",
+    "CDI @ApplicationScoped",
+    "Implements AnalysisPort.\nOrchestrates PhaseExecutors 1–9\nand RagIndexingService;\nenforces ordering, caching,\nand retry rules.")
+
+  Component(query_svc, "Query Orchestration Service",
+    "CDI @ApplicationScoped",
+    "Implements QueryPort.\nRoutes queries to the\nappropriate domain service\n(Risk, Docs, Bugs, Features).")
+
+  ' ── Domain services ───────────────────────────────────────
+  Component(phases, "Phase Executors (1–9)",
+    "CDI beans",
+    "One executor per phase.\nBuilds phase context,\ncalls LlmPort,\nparses structured result.")
+
+  Component(rag_indexer, "RAG Indexing Service",
+    "CDI bean (domain)",
+    "Phase 10.\nChunks phase results,\ncalls EmbeddingPort,\nstores chunks via RagPort.")
+
+  Component(risk_svc, "Risk Analyser Service",
+    "CDI bean (domain)",
+    "Retrieves chunks via RagPort,\ncalls LlmPort,\nparses risk findings (BR-020).")
+
+  Component(doc_svc, "Documentation Composer Service",
+    "CDI bean (domain)",
+    "Retrieves chunks via RagPort,\ncalls LlmPort,\nassembles AsciiDoc document.")
+
+  Component(bug_svc, "Bug Finder Service",
+    "CDI bean (domain)",
+    "Embeds bug description,\nretrieves chunks via RagPort,\ncalls LlmPort for fault localisation.")
+
+  Component(feature_svc, "Feature Advisor Service",
+    "CDI bean (domain)",
+    "Retrieves arch + class chunks,\ncalls LlmPort,\ngenerates implementation plan (BR-022).")
+
+  Component(prompts, "Prompt Template Loader",
+    "CDI @Singleton",
+    "Loads per-phase and\nper-capability prompt templates\nfrom classpath resources.")
+
+  ' ── Inbound ports ─────────────────────────────────────────
+  Component(analysis_port, "AnalysisPort",
+    "CDI interface",
+    "Inbound port:\nstart / resume / cancel / getStatus")
+
+  Component(query_port, "QueryPort",
+    "CDI interface",
+    "Inbound port:\nanalyseRisks / generateDocs\n/ findBugs / suggestFeature")
+
+  ' ── Outbound ports ────────────────────────────────────────
+  Component(llm_port, "LlmPort",
+    "CDI interface",
+    "Outbound port:\nexecutePrompt(PhasePrompt) : PhaseResponse")
+
+  Component(embed_port, "EmbeddingPort",
+    "CDI interface",
+    "Outbound port:\nembed(text) : float[]")
+
+  Component(rag_port, "RagPort",
+    "CDI interface",
+    "Outbound port:\nindex(chunks) / search(query, topK)")
+
+  Component(project_port, "ProjectSourcePort",
+    "CDI interface",
+    "Outbound port:\nloadProject(ProjectSource) : ProjectTree")
+
+  Component(cache_port, "CachePort",
+    "CDI interface",
+    "Outbound port:\nsave/load phase results")
+
+  Component(report_port, "ReportPort",
+    "CDI interface",
+    "Outbound port:\ngenerateReport(AnalysisJob) : ReportFile")
+
+  ' ── Outbound adapters ─────────────────────────────────────
+  Component(llm_adapter, "LangChain4J LLM Adapter",
+    "quarkus-langchain4j",
+    "Implements LlmPort.\nDelegates to LangChain4J AI service;\nhandles chunking and retries.")
+
+  Component(embed_adapter, "LangChain4J Embedding Adapter",
+    "quarkus-langchain4j",
+    "Implements EmbeddingPort.\nDelegates to LangChain4J EmbeddingModel\n(Ollama / OpenAI / fallback).")
+
+  Component(rag_adapter, "PostgreSQL RAG Adapter",
+    "jOOQ + pgvector",
+    "Implements RagPort.\nWrites chunks to rag_chunks table;\nruns <=> similarity queries.")
+
+  Component(fs_project, "Filesystem Project Adapter",
+    "CDI @Alternative",
+    "Implements ProjectSourcePort.\nReads files under /workspace.")
+
+  Component(git_adapter, "Git Project Adapter",
+    "CDI @Alternative",
+    "Implements ProjectSourcePort.\nClones repo to temp dir;\ndelegates to FilesystemProjectAdapter.")
+
+  Component(fs_cache, "Filesystem Cache Adapter",
+    "CDI bean",
+    "Implements CachePort.\nReads/writes JSON files\nin the cache directory.")
+
+  Component(report_adapter, "AsciiDoc Report Adapter",
+    "CDI bean",
+    "Implements ReportPort.\nAssembles report from\nall phase results.")
+
+  Component(config, "Application Configuration",
+    "Quarkus @ConfigMapping",
+    "Resolves LLM provider,\nbatch size, paths, format,\nembedding dimension, chunk size,\ntop-K defaults.")
+}
+
+' Relations — inbound
+Rel(ui,         analysis_port, "start / resume / status", "CDI call")
+Rel(ui,         query_port,    "analyseRisks / generateDocs\n/ findBugs / suggestFeature", "CDI call")
+
+' Relations — application services to ports
+Rel(pipeline,   analysis_port, "implements",               "")
+Rel(query_svc,  query_port,    "implements",               "")
+Rel(pipeline,   phases,        "execute phase N",          "CDI call")
+Rel(pipeline,   rag_indexer,   "execute phase 10",         "CDI call")
+Rel(query_svc,  risk_svc,      "delegate risk query",      "CDI call")
+Rel(query_svc,  doc_svc,       "delegate doc query",       "CDI call")
+Rel(query_svc,  bug_svc,       "delegate bug query",       "CDI call")
+Rel(query_svc,  feature_svc,   "delegate feature query",   "CDI call")
+
+' Relations — domain services to ports
+Rel(phases,       prompts,      "load template",            "CDI call")
+Rel(phases,       llm_port,     "executePrompt()",          "port call")
+Rel(rag_indexer,  embed_port,   "embed(text)",              "port call")
+Rel(rag_indexer,  rag_port,     "index(chunks)",            "port call")
+Rel(risk_svc,     rag_port,     "search(query, K)",         "port call")
+Rel(risk_svc,     llm_port,     "executePrompt()",          "port call")
+Rel(doc_svc,      rag_port,     "search(query, K)",         "port call")
+Rel(doc_svc,      llm_port,     "executePrompt()",          "port call")
+Rel(bug_svc,      embed_port,   "embed(description)",       "port call")
+Rel(bug_svc,      rag_port,     "search(vector, K)",        "port call")
+Rel(bug_svc,      llm_port,     "executePrompt()",          "port call")
+Rel(feature_svc,  embed_port,   "embed(description)",       "port call")
+Rel(feature_svc,  rag_port,     "search(vector, K)",        "port call")
+Rel(feature_svc,  llm_port,     "executePrompt()",          "port call")
+Rel(pipeline,     project_port, "loadProject()",            "port call")
+Rel(pipeline,     cache_port,   "save/load result",         "port call")
+Rel(pipeline,     report_port,  "generateReport()",         "port call")
+
+' Relations — adapters to ports
+Rel(llm_adapter,    llm_port,     "implements",               "")
+Rel(embed_adapter,  embed_port,   "implements",               "")
+Rel(rag_adapter,    rag_port,     "implements",               "")
+Rel(fs_project,     project_port, "implements",               "")
+Rel(git_adapter,    project_port, "implements (fallback)",    "")
+Rel(fs_cache,       cache_port,   "implements",               "")
+Rel(report_adapter, report_port,  "implements",               "")
+@enduml
+....
+
+=== Building Block Details
+
+[cols="2,3,2,2", options="header"]
+|===
+| Building Block | Responsibility | Interface | Source Location
+
+| Vaadin UI
+| Presents analysis configuration, live progress (phase-by-phase), the finished report download, and the four interactive query views.
+No business logic.
+| Calls `AnalysisPort` (inbound) and `QueryPort` (inbound).
+| `dev.analyser.adapter.in.ui`
+
+| Analysis Pipeline Service
+| Implements `AnalysisPort`. Enforces phase ordering (BR-001), writes cache after each phase (BR-002), applies retry policy (BR-016), handles SIGTERM flush, invokes `RagIndexingService` as Phase 10.
+| `AnalysisPort`: `start(config)`, `resume(cacheDir)`, `cancel(jobId)`, `getStatus(jobId)`
+| `dev.analyser.application.service`
+
+| Query Orchestration Service
+| Implements `QueryPort`. Routes incoming query requests to the appropriate domain service; enforces RAG retrieval before any LLM call.
+| `QueryPort`: `analyseRisks(jobId, scope)`, `generateDocumentation(jobId, audience)`, `findBugs(jobId, description)`, `suggestFeature(jobId, description)`
+| `dev.analyser.application.service`
+
+| Phase Executors 1–9
+| One CDI bean per analysis phase. Builds the phase-specific context object from the `ProjectTree`, selects the prompt template, calls `LlmPort`, and parses the structured JSON response.
+| `PhaseExecutor`: `execute(AnalysisJob, ProjectTree) : PhaseResult`
+| `dev.analyser.domain.service.phase`
+
+| RAG Indexing Service
+| Phase 10 implementation. Reads all phase results, chunks them (BR-018), calls `EmbeddingPort` for each chunk, and stores chunks with vectors via `RagPort`. Marks job as `INDEXED` on completion.
+| `RagIndexer`: `index(AnalysisJob) : IndexSummary`
+| `dev.analyser.domain.service`
+
+| Risk Analyser Service
+| Retrieves the top-K knowledge base chunks for the requested risk scope, submits them with a risk-analysis prompt to `LlmPort`, and parses structured risk findings (BR-019, BR-020, BR-021).
+| `RiskAnalyser`: `analyse(jobId, scope) : RiskReport`
+| `dev.analyser.domain.service.query`
+
+| Documentation Composer Service
+| Section by section, retrieves relevant chunks and submits them with an audience-tailored prompt to `LlmPort`; assembles the full documentation document.
+| `DocumentationComposer`: `compose(jobId, audience, sections) : Documentation`
+| `dev.analyser.domain.service.query`
+
+| Bug Finder Service
+| Embeds the user's bug description, retrieves similar chunks from the knowledge base, submits them with a fault-localisation prompt to `LlmPort`, and parses suspect components with confidence levels.
+| `BugFinder`: `findBugs(jobId, description) : BugFindings`
+| `dev.analyser.domain.service.query`
+
+| Feature Advisor Service
+| Embeds the feature description, retrieves architecture and class-level chunks (BR-022), submits them with a feature-guidance prompt to `LlmPort`, and returns a structured implementation plan.
+| `FeatureAdvisor`: `suggestApproach(jobId, description, scope) : FeaturePlan`
+| `dev.analyser.domain.service.query`
+
+| Prompt Template Loader
+| Loads per-phase and per-capability AsciiDoc/text prompt templates from `src/main/resources/prompts/`.
+Supports variable substitution for model name, project name, and scope parameters.
+| `loadTemplate(templateId) : PromptTemplate`
+| `dev.analyser.domain.service`
+
+| LlmPort
+| Outbound port: abstracts all LLM provider calls.
+| `executePrompt(PhasePrompt) : PhaseResponse`
+| `dev.analyser.application.port.out`
+
+| EmbeddingPort
+| Outbound port: abstracts embedding model calls.
+| `embed(text) : float[]`; `embedBatch(texts) : List<float[]>`
+| `dev.analyser.application.port.out`
+
+| RagPort
+| Outbound port: abstracts RAG chunk storage and retrieval.
+| `index(jobId, chunks)`, `search(jobId, queryVector, topK) : List<RagResult>`, `searchByText(jobId, queryText, topK) : List<RagResult>`
+| `dev.analyser.application.port.out`
+
+| ProjectSourcePort
+| Outbound port: loads the project file tree (class names, source content, package structure).
+| `loadProject(ProjectSource) : ProjectTree`
+| `dev.analyser.application.port.out`
+
+| CachePort
+| Outbound port: persists and retrieves per-phase results.
+| `save(PhaseResult)`, `load(jobId, phaseId) : Optional<PhaseResult>`, `listCompleted(jobId)`
+| `dev.analyser.application.port.out`
+
+| ReportPort
+| Outbound port: renders the final report from all phase results.
+| `generateReport(AnalysisJob) : ReportFile`
+| `dev.analyser.application.port.out`
+
+| LangChain4J LLM Adapter
+| Implements `LlmPort`. Selects the active `ChatLanguageModel` CDI bean (Ollama / OpenAI / Anthropic) based on Quarkus profile. Handles token-count estimation, chunking, and structured output parsing.
+| Implements `LlmPort`.
+| `dev.analyser.adapter.out.llm`
+
+| LangChain4J Embedding Adapter
+| Implements `EmbeddingPort`. Selects the active `EmbeddingModel` CDI bean (Ollama `nomic-embed-text` / OpenAI `text-embedding-3-small` / fallback) based on Quarkus profile. Supports batch embedding for Phase 10 performance.
+| Implements `EmbeddingPort`.
+| `dev.analyser.adapter.out.llm`
+
+| PostgreSQL RAG Adapter
+| Implements `RagPort`. Writes chunks and their vectors to the `rag_chunks` table; runs cosine similarity queries using the pgvector `<=>` operator via jOOQ (ADR-008).
+| Implements `RagPort`.
+| `dev.analyser.adapter.out.rag`
+
+| Filesystem Project Adapter
+| Implements `ProjectSourcePort` for local paths.
+Traverses `src/main/java` and `src/test/java`, reads build descriptors and README files.
+| Implements `ProjectSourcePort`.
+| `dev.analyser.adapter.out.project`
+
+| Git Project Adapter
+| Implements `ProjectSourcePort` for Git URLs.
+Runs `git clone`; delegates to `FilesystemProjectAdapter` after cloning.
+| Implements `ProjectSourcePort`.
+| `dev.analyser.adapter.out.project`
+
+| Filesystem Cache Adapter
+| Reads and writes phase result JSON files and the LLM call JSONL log in the configured cache directory.
+| Implements `CachePort`.
+| `dev.analyser.adapter.out.cache`
+
+| AsciiDoc Report Adapter
+| Assembles the 14-section report from all phase results.
+Emits `.adoc` (primary) or `.md` (optional) and the two JSON artifacts.
+| Implements `ReportPort`.
+| `dev.analyser.adapter.out.report`
+
+| Application Configuration
+| Resolves and validates all configuration properties including embedding dimension, chunk size, top-K defaults, and similarity threshold.
+Exposes typed config records consumed by the pipeline, indexer, query services, and adapters.
+| `@ConfigMapping` interfaces: `AnalysisConfig`, `QueryConfig`
+| `dev.analyser.infrastructure.config`
+|===

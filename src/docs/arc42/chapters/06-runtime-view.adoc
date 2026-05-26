@@ -1,0 +1,297 @@
+= Runtime View
+
+== SC-01: Analyse a Local Project (Main Success Scenario)
+
+Covers UC-001 MSS. Demonstrates: Vaadin UI, Analysis Pipeline Service, all Phase Executors, LangChain4J LLM Adapter, Filesystem Project Adapter, Filesystem Cache Adapter, AsciiDoc Report Adapter.
+
+[plantuml, sc-01-sequence, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 11
+autonumber
+
+actor Analyst
+participant "Vaadin UI" as UI
+participant "AnalysisPipelineService" as Pipeline
+participant "FilesystemProjectAdapter" as FSProject
+participant "PhaseExecutor[1..9]" as Phase
+participant "LangChain4JLlmAdapter" as LlmAdapter
+participant "ChatLanguageModel\n(Ollama|OpenAI|Anthropic)" as LLM
+participant "FilesystemCacheAdapter" as Cache
+participant "AsciiDocReportAdapter" as Report
+
+Analyst -> UI : click Start Analysis\n(workspace path, LLM config)
+UI -> Pipeline : start(AnalysisConfig)
+Pipeline -> FSProject : loadProject(ProjectSource)
+FSProject --> Pipeline : ProjectTree
+
+loop phases 1 to 9
+  Pipeline -> Phase : execute(job, projectTree)
+  Phase -> LlmAdapter : executePrompt(PhasePrompt)
+  LlmAdapter -> LLM : chat(messages)
+  LLM --> LlmAdapter : response text
+  LlmAdapter -> LlmAdapter : parse + validate JSON schema
+  LlmAdapter --> Phase : PhaseResponse
+  Phase --> Pipeline : PhaseResult
+  Pipeline -> Cache : save(PhaseResult)
+  Pipeline -> UI : progress event (phase N done)
+  UI -> Analyst : live progress update
+end
+
+Pipeline -> Report : generateReport(AnalysisJob)
+Report --> Pipeline : ReportFile
+Pipeline -> UI : analysisCompleted(ReportFile)
+UI -> Analyst : show download link
+@enduml
+....
+
+---
+
+== SC-02: LLM Call Retry After Transient Failure
+
+Covers UC-001 extension 3–11a, BR-016. Demonstrates: LangChain4J LLM Adapter retry logic, Filesystem Cache Adapter (failure flush on exhaustion).
+
+[plantuml, sc-02-retry, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 11
+autonumber
+
+participant "PhaseExecutor" as Phase
+participant "LangChain4JLlmAdapter" as Adapter
+participant "ChatLanguageModel" as LLM
+participant "FilesystemCacheAdapter" as Cache
+
+Phase -> Adapter : executePrompt(PhasePrompt)
+
+Adapter -> LLM : chat() [attempt 1]
+LLM --> Adapter : HTTP 429 Too Many Requests
+
+Adapter -> Adapter : wait 1 s (backoff)
+Adapter -> LLM : chat() [attempt 2]
+LLM --> Adapter : HTTP 500 Internal Server Error
+
+Adapter -> Adapter : wait 2 s (backoff)
+Adapter -> LLM : chat() [attempt 3]
+LLM --> Adapter : HTTP 200 OK
+
+Adapter -> Adapter : parse + validate JSON schema
+Adapter --> Phase : PhaseResponse (success)
+@enduml
+....
+
+---
+
+== SC-03: Resume After Interruption
+
+Covers UC-002 MSS, BR-001, BR-002, BR-003. Demonstrates: Vaadin UI resume, Analysis Pipeline Service, Filesystem Cache Adapter (load), Phase Executors (skip completed), AsciiDoc Report Adapter.
+
+[plantuml, sc-03-resume, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 11
+autonumber
+
+actor Analyst
+participant "Vaadin UI" as UI
+participant "AnalysisPipelineService" as Pipeline
+participant "FilesystemCacheAdapter" as Cache
+participant "PhaseExecutor[4..9]" as Phase
+participant "LangChain4JLlmAdapter" as LlmAdapter
+participant "AsciiDocReportAdapter" as Report
+
+Analyst -> UI : click Resume Analysis\n(cache directory)
+UI -> Pipeline : resume(cacheDir)
+Pipeline -> Cache : listCompleted(jobId)
+Cache --> Pipeline : [phase-1, phase-2, phase-3]
+
+Pipeline -> UI : phases 1–3 loaded from cache
+UI -> Analyst : show resumed status
+
+Pipeline -> Cache : load(jobId, 1)
+Cache --> Pipeline : PhaseResult phase-1
+Pipeline -> Cache : load(jobId, 2)
+Cache --> Pipeline : PhaseResult phase-2
+Pipeline -> Cache : load(jobId, 3)
+Cache --> Pipeline : PhaseResult phase-3
+
+loop phases 4 to 9
+  Pipeline -> Phase : execute(job, projectTree)
+  Phase -> LlmAdapter : executePrompt()
+  LlmAdapter --> Phase : PhaseResponse
+  Phase --> Pipeline : PhaseResult
+  Pipeline -> Cache : save(PhaseResult)
+end
+
+Pipeline -> Report : generateReport(AnalysisJob)
+Report --> Pipeline : ReportFile
+Pipeline -> UI : analysisCompleted(ReportFile)
+@enduml
+....
+
+---
+
+== SC-04: Pull Source from Git Repository
+
+Covers UC-001 extension (Git URL input). Demonstrates: Git Project Adapter, Filesystem Project Adapter (delegation).
+
+[plantuml, sc-04-git, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 11
+autonumber
+
+participant "AnalysisPipelineService" as Pipeline
+participant "GitProjectAdapter" as GitAdapter
+participant "git binary" as Git
+participant "FilesystemProjectAdapter" as FSAdapter
+
+Pipeline -> GitAdapter : loadProject(GitSource{url})
+GitAdapter -> Git : git clone <url> /tmp/workspace-<uuid>
+Git --> GitAdapter : exit 0 (clone complete)
+GitAdapter -> FSAdapter : loadProject(LocalSource{/tmp/workspace-<uuid>})
+FSAdapter --> GitAdapter : ProjectTree
+GitAdapter --> Pipeline : ProjectTree
+@enduml
+....
+
+---
+
+== SC-05: RAG Knowledge Base Indexing (Phase 10)
+
+Covers UC-001 steps 13–14, BR-017, BR-018. Demonstrates: Analysis Pipeline Service, RAG Indexing Service, LangChain4J Embedding Adapter, PostgreSQL RAG Adapter, Vaadin UI.
+
+[plantuml, sc-05-rag-index, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 11
+autonumber
+
+participant "AnalysisPipelineService" as Pipeline
+participant "RagIndexingService" as Indexer
+participant "LangChain4JEmbeddingAdapter" as EmbedAdapter
+participant "EmbeddingModel\n(Ollama|OpenAI)" as EmbedModel
+participant "PostgresRagAdapter" as RagAdapter
+participant "PostgreSQL\n(rag_chunks)" as DB
+participant "Vaadin UI" as UI
+
+Pipeline -> Indexer : index(AnalysisJob)
+note right of Indexer : Phase 10 begins\nafter Phase 9 cache flush
+
+loop for each phase result (1..9)
+  Indexer -> Indexer : chunk(phaseResult) → List<TextChunk>
+  Indexer -> EmbedAdapter : embedBatch(chunks)
+  EmbedAdapter -> EmbedModel : POST /embed (batch)
+  EmbedModel --> EmbedAdapter : List<float[]>
+  EmbedAdapter --> Indexer : List<float[]>
+  Indexer -> RagAdapter : index(jobId, chunksWithVectors)
+  RagAdapter -> DB : INSERT INTO rag_chunks (job_id, phase_id, chunk_text, embedding, metadata)
+  DB --> RagAdapter : OK
+end
+
+Indexer -> DB : UPDATE analysis_jobs SET status = 'INDEXED'
+DB --> Indexer : OK
+Indexer --> Pipeline : IndexSummary
+Pipeline -> UI : indexingCompleted(jobId)
+UI -> UI : enable query capability buttons\n(Risk, Docs, Bugs, Features)
+@enduml
+....
+
+---
+
+== SC-06: Risk Analysis Query
+
+Covers UC-004 MSS, BR-019, BR-020, BR-021. Demonstrates: Vaadin Query View, Query Orchestration Service, Risk Analyser Service, PostgreSQL RAG Adapter, LangChain4J LLM Adapter.
+
+[plantuml, sc-06-risk-query, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 11
+autonumber
+
+actor Analyst
+participant "Vaadin UI\n(QueryView)" as UI
+participant "QueryOrchestrationService" as QOS
+participant "RiskAnalyserService" as RiskSvc
+participant "PostgresRagAdapter" as RagAdapter
+participant "PostgreSQL\n(rag_chunks)" as DB
+participant "LangChain4JLlmAdapter" as LlmAdapter
+participant "ChatLanguageModel" as LLM
+
+Analyst -> UI : select job, choose scope=SECURITY,\nclick "Analyse Risks"
+UI -> QOS : analyseRisks(jobId, scope=SECURITY)
+QOS -> RiskSvc : analyse(jobId, SECURITY)
+RiskSvc -> RagAdapter : searchByText(jobId, "security vulnerabilities authentication authorisation", topK=15)
+RagAdapter -> DB : SELECT ... ORDER BY embedding <=> query_vector LIMIT 15
+DB --> RagAdapter : List<RagResult>
+RagAdapter --> RiskSvc : List<RagResult>
+
+RiskSvc -> LlmAdapter : executePrompt(riskPrompt + chunks)
+LlmAdapter -> LLM : chat(messages)
+LLM --> LlmAdapter : structured JSON (risk findings)
+LlmAdapter -> LlmAdapter : parse + validate (category ∈ {Security,Usability,Readability}, BR-020)
+LlmAdapter --> RiskSvc : PhaseResponse
+
+RiskSvc -> DB : INSERT INTO query_results (job_id, type, payload)
+DB --> RiskSvc : OK
+RiskSvc --> QOS : RiskReport
+QOS --> UI : RiskReport
+UI -> Analyst : render risk findings (grouped, severity-ordered)
+@enduml
+....
+
+---
+
+== SC-07: LLM-Assisted Bug Finding
+
+Covers UC-006 MSS, BR-019, BR-021. Demonstrates: Vaadin Query View, Query Orchestration Service, Bug Finder Service, LangChain4J Embedding Adapter, PostgreSQL RAG Adapter, LangChain4J LLM Adapter.
+
+[plantuml, sc-07-bug-find, svg]
+....
+@startuml
+skinparam monochrome true
+skinparam defaultFontSize 11
+autonumber
+
+actor Developer
+participant "Vaadin UI\n(QueryView)" as UI
+participant "QueryOrchestrationService" as QOS
+participant "BugFinderService" as BugSvc
+participant "LangChain4JEmbeddingAdapter" as EmbedAdapter
+participant "EmbeddingModel" as EmbedModel
+participant "PostgresRagAdapter" as RagAdapter
+participant "PostgreSQL\n(rag_chunks)" as DB
+participant "LangChain4JLlmAdapter" as LlmAdapter
+participant "ChatLanguageModel" as LLM
+
+Developer -> UI : enter bug description,\nclick "Search"
+UI -> QOS : findBugs(jobId, description)
+QOS -> BugSvc : findBugs(jobId, description)
+
+BugSvc -> EmbedAdapter : embed(description)
+EmbedAdapter -> EmbedModel : POST /embed (single text)
+EmbedModel --> EmbedAdapter : float[]
+EmbedAdapter --> BugSvc : queryVector
+
+BugSvc -> RagAdapter : search(jobId, queryVector, topK=10)
+RagAdapter -> DB : SELECT ... ORDER BY embedding <=> $queryVector LIMIT 10
+DB --> RagAdapter : List<RagResult>
+RagAdapter --> BugSvc : List<RagResult>
+
+BugSvc -> LlmAdapter : executePrompt(bugPrompt + description + chunks)
+LlmAdapter -> LLM : chat(messages)
+LLM --> LlmAdapter : structured JSON (suspect components)
+LlmAdapter --> BugSvc : PhaseResponse
+
+BugSvc -> DB : INSERT INTO query_results
+BugSvc --> QOS : BugFindings
+QOS --> UI : BugFindings
+UI -> Developer : render suspect components\n(confidence-ordered, with source links)
+@enduml
+....

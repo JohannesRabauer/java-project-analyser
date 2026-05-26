@@ -1,0 +1,92 @@
+= ADR-008: pgvector for Semantic Similarity Search in the RAG Knowledge Base
+Johannes Rabauer <rabauer.dev@gmail.com>
+v1.0, 2026-05-26
+
+== Status
+Accepted
+
+== Context
+
+After the 9-phase analysis pipeline completes, all phase results must be persisted as a queryable knowledge base.
+The four query capabilities (risk analysis, documentation, bug finding, feature assistance) all rely on semantic similarity search: a user question or scope descriptor is embedded into a vector, and the system retrieves the knowledge base chunks whose vectors are closest to that query vector.
+
+The key decision is *where* to store the vector embeddings and *how* to perform the similarity search.
+
+Options considered:
+
+[cols="1,2,3", options="header"]
+|===
+| Option | Description | Trade-offs
+
+| A — Dedicated vector database (Qdrant, Weaviate, Milvus)
+| Run a separate container purely for vector storage and retrieval.
+| Excellent vector search performance and full ANN index support; however, introduces a *third* persistent service alongside the existing PostgreSQL instance, doubling operational surface area, complicating Docker Compose profiles, and adding a new technology stack for the team to operate.
+
+| B — pgvector extension on the existing PostgreSQL instance
+| Enable the `pgvector` extension on the existing PostgreSQL 17 database; store embeddings in a `VECTOR(N)` column in the `rag_chunks` table; query with `<=>` (cosine distance) operator.
+| No new service to operate; the same PostgreSQL instance already used for analysis jobs, LLM call logs, and reports; existing jOOQ codegen pipeline covers the new table; straightforward Docker Compose profile change.
+
+| C — Filesystem-only (serialised JSON arrays)
+| Store embedding vectors as JSON files on disk, perform brute-force dot-product search in Java.
+| Zero infrastructure change; not viable for any collection larger than a few hundred chunks — O(n) scan over all embeddings on every query is unacceptably slow.
+|===
+
+=== Pugh Matrix (reference baseline: Option A)
+
+[cols="2,1,1,1", options="header"]
+|===
+| Criterion | A (baseline) | B — pgvector | C — filesystem
+
+| Operational simplicity
+| 0
+| +
+| +
+
+| Search performance at scale
+| 0
+| 0
+| −
+
+| Integration with existing jOOQ pipeline
+| −
+| +
+| 0
+
+| Docker Compose complexity
+| 0
+| +
+| +
+
+| Ecosystem maturity
+| 0
+| 0
+| −
+|===
+
+Score (vs baseline): B = +3, C = 0.
+
+== Decision
+
+Use **pgvector** (Option B) — enable the `pgvector` extension on the existing PostgreSQL 17 instance and store embeddings in the `rag_chunks` table.
+
+== Consequences
+
+=== Positive
+* Single persistent service to operate — no dedicated vector database container required.
+* Transactional consistency between analysis job metadata and RAG chunks at no extra effort.
+* jOOQ generates type-safe code for `rag_chunks` alongside existing tables.
+* HNSW index (`CREATE INDEX USING hnsw`) delivers sub-linear query time once the dataset grows.
+* Cosine similarity queries use the standard `<=>` pgvector operator; no custom search engine API to learn.
+
+=== Negative / Mitigations
+* pgvector is not a purpose-built ANN engine; at very large scale (millions of chunks) query latency may exceed that of Qdrant/Weaviate.
+  Mitigation: the typical RAG knowledge base for a single Java project produces ≤ 50 000 chunks; pgvector HNSW is well within its performance envelope at that scale.
+* `pgvector` must be installed in the PostgreSQL container image.
+  Mitigation: use `pgvector/pgvector:pg17` as the base image in Docker Compose; it bundles the extension.
+* Flyway migration must `CREATE EXTENSION IF NOT EXISTS vector` before creating the `rag_chunks` table.
+  Mitigation: document as a one-liner in the initial schema migration.
+
+=== Neutral
+* Embedding dimensionality is fixed per model (e.g., 1536 for OpenAI `text-embedding-3-small`, 768 for Ollama `nomic-embed-text`).
+  The `VECTOR(N)` column dimension is set once per deployment profile and stored in `AnalysisConfig`.
+* LangChain4J provides embedding model implementations for all three profiles (Ollama, OpenAI, Anthropic) through `EmbeddingModel` — no adapter code needs to know the dimensionality.

@@ -1,0 +1,89 @@
+= Introduction and Goals
+
+== Requirements Overview
+
+The Java Project Analyser ingests a Java codebase, drives a ten-phase LLM analysis pipeline, and persists the results as a RAG (Retrieval-Augmented Generation) knowledge base in PostgreSQL.
+
+The system has two operating modes:
+
+**Analyse mode** — Phases 1–9 extract and synthesise knowledge from the source code.
+Phase 10 chunks every phase result, embeds each chunk, and stores it in the vector store.
+Inputs arrive through a Docker volume mount (read-only) or by cloning a Git repository at analysis time.
+A Vaadin browser UI drives the analysis and displays the static analysis report.
+
+**Query mode** — Once a job is `INDEXED`, the Vaadin UI exposes four interactive query capabilities that use retrieval-augmented generation against the stored knowledge base:
+
+* Risk Analysis (security, usability, readability)
+* Documentation Generation (audience-tailored)
+* LLM-Assisted Bug Finding
+* LLM-Assisted Feature Implementation Guidance
+
+Full requirements: link:../../specs/index.adoc[Specification Index] and link:../../specs/prd.adoc[PRD].
+
+Key use cases:
+* link:../../specs/use-cases/uc-001-analyse-java-project.adoc[UC-001] — Analyse a Java Project (includes RAG indexing — Phase 10)
+* link:../../specs/use-cases/uc-002-resume-analysis.adoc[UC-002] — Resume an Interrupted Analysis
+* link:../../specs/use-cases/uc-003-configure-analyser.adoc[UC-003] — Configure the Analyser
+* link:../../specs/use-cases/uc-004-risk-analysis.adoc[UC-004] — Analyse Risks of an Analysed Application
+* link:../../specs/use-cases/uc-005-generate-documentation.adoc[UC-005] — Generate System Documentation
+* link:../../specs/use-cases/uc-006-find-bugs.adoc[UC-006] — Find Bugs Using the RAG Knowledge Base
+* link:../../specs/use-cases/uc-007-feature-assistance.adoc[UC-007] — LLM-Assisted Feature Implementation Guidance
+
+== Quality Goals
+
+Top quality goals, in priority order.
+Each maps to a named architectural approach in <<Solution Strategy>>.
+
+[cols="1,2,3,2", options="header"]
+|===
+| ID | Quality Characteristic | Scenario (short) | Architectural Approach
+
+| QG-1
+| Modifiability
+| A developer switches the LLM provider from OpenAI to local Ollama by changing one configuration property — no code changes.
+| Hexagonal architecture with `LlmPort` and `EmbeddingPort` (ADR-004); LangChain4J multi-provider abstraction (ADR-003)
+
+| QG-2
+| Deployability
+| A developer who clones the repository can run the full application with `docker compose --profile local up` in under 5 minutes.
+| Docker Compose with named profiles (ADR-005); self-contained Quarkus container image; pgvector bundled in the PostgreSQL image (ADR-008)
+
+| QG-3
+| Functional Correctness
+| For a well-known project (e.g., Spring PetClinic), the report correctly identifies all framework technologies and the architectural style; risk analysis correctly surfaces at least one real security concern.
+| Phase-by-phase LLM prompting; uncertainty markers preserved (BR-009); structured output schema validation; RAG retrieval grounding (ADR-008)
+
+| QG-4
+| Time Behaviour
+| A 500-class project completes all 10 phases (including RAG indexing) and has all query capabilities available within 12 minutes.
+| Chunked batching (BR-005); parallel chunk dispatch; phase result caching (BR-002); batch embedding in Phase 10
+
+| QG-5
+| Query Relevance
+| A bug-finding query for a real defect in the analysed project returns the responsible class in the top-3 results in ≥ 80 % of test cases.
+| pgvector cosine similarity with configurable threshold (BR-019); BR-022 architectural context injection for feature queries
+
+| QG-6
+| Usability
+| A non-technical project manager can run a risk analysis and export the report in under 3 minutes without reading any documentation.
+| Vaadin query views with guided input; structured, audience-aware output; one-click export (UC-004, UC-005)
+|===
+
+== Stakeholders
+
+[cols="1,2,3", options="header"]
+|===
+| Role | Name / Group | Expectation
+
+| Primary user
+| Software Architect, Onboarding Developer, Technical Writer, Project Manager, Developer
+| Fast, accurate knowledge model; low setup friction; query capabilities that answer real questions about the codebase.
+
+| Developer (of this tool)
+| Johannes Rabauer
+| Clean, extensible codebase; easy to add a new LLM provider, a new analysis phase, or a new query capability.
+
+| LLM API Provider
+| Anthropic, OpenAI, Ollama community
+| API called within rate limits; prompt and embedding calls compatible with current API versions.
+|===

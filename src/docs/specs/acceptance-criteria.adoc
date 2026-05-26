@@ -1,0 +1,228 @@
+= Acceptance Criteria
+:doctype: article
+:toc: left
+:toclevels: 3
+:sectnums:
+:sectanchors:
+:icons: font
+
+Acceptance criteria are written in Gherkin (Given/When/Then).
+Each scenario references its use case (UC-NNN) and, where applicable, the business rules it exercises (BR-NNN).
+
+== UC-001: Analyse a Java Project
+
+=== Feature: Full analysis of a Maven project
+
+[source,gherkin]
+----
+Feature: Analyse a Java Project
+
+  Background:
+    Given the analyser is installed
+    And a valid LLM API key is configured
+
+  # UC-001 MSS — happy path
+  Scenario: Successful analysis of a single-module Maven project
+    Given a Maven project exists at "/projects/sample-app" with a "pom.xml"
+    When the user runs "java-analyser analyse /projects/sample-app"
+    Then the command exits with code 0
+    And the file "analysis-output/report.adoc" exists
+    And "report.adoc" contains a section titled "Executive Summary"
+    And "report.adoc" contains a section titled "Architecture Assessment"
+    And the file "analysis-output/dependency-graph.json" exists
+    And the file "analysis-output/responsibility-map.json" exists
+    And the file "analysis-cache/llm-calls.jsonl" exists
+    And "llm-calls.jsonl" contains exactly 9 or more JSONL entries
+    # BR-008
+    And "report.adoc" contains the tool version, model identifier, and analysis timestamps
+
+  # UC-001 MSS — multi-module
+  Scenario: Successful analysis of a multi-module Gradle project
+    Given a Gradle project exists at "/projects/multi-module" with a "settings.gradle" listing 3 submodules
+    When the user runs "java-analyser analyse /projects/multi-module"
+    Then the command exits with code 0
+    And "report.adoc" contains a "Module Analysis" section with entries for all 3 submodules
+
+  # UC-001 / BR-005 — large project chunking
+  Scenario: Phase 4 uses batching for a project with more than 500 classes
+    Given a Maven project exists at "/projects/large-app" with 620 production classes
+    When the user runs "java-analyser analyse /projects/large-app"
+    Then the command exits with code 0
+    And "llm-calls.jsonl" contains more than 9 entries
+    And all entries with "phaseId": 4 contain a non-null "chunkIndex" field
+
+  # UC-001 / BR-012 — machine-readable artifacts always emitted
+  Scenario: Machine-readable artifacts are emitted even when Markdown format is chosen
+    Given a Maven project exists at "/projects/sample-app"
+    When the user runs "java-analyser analyse /projects/sample-app --format md"
+    Then the file "analysis-output/report.md" exists
+    And the file "analysis-output/dependency-graph.json" exists
+    And the file "analysis-output/responsibility-map.json" exists
+
+  # UC-001 / BR-006 — no modification of project
+  Scenario: The analyser does not modify the analysed project
+    Given a Maven project exists at "/projects/sample-app"
+    And a checksum of all files under "/projects/sample-app" is recorded
+    When the user runs "java-analyser analyse /projects/sample-app"
+    Then the checksum of all files under "/projects/sample-app" is unchanged
+
+  # UC-001 / BR-009 — uncertainty preserved
+  Scenario: Uncertainty markers from the LLM are preserved in the report
+    Given a Maven project exists at "/projects/minimal-app" with no README
+    When the user runs "java-analyser analyse /projects/minimal-app"
+    Then the command exits with code 0
+    And the report does not contain fabricated business context for undocumented features
+
+----
+
+=== Feature: Error handling during analysis
+
+[source,gherkin]
+----
+Feature: Error Handling During Analysis
+
+  Background:
+    Given the analyser is installed
+    And a valid LLM API key is configured
+
+  # UC-001 extension 2a
+  Scenario: Analysis fails when project path does not exist
+    When the user runs "java-analyser analyse /projects/does-not-exist"
+    Then the command exits with code 2
+    And stderr contains "Project not found"
+    And no files are written to the output directory
+
+  # UC-001 extension 2b
+  Scenario: Analysis fails when no build descriptor is found
+    Given a directory exists at "/projects/not-java" with no "pom.xml" or "build.gradle"
+    When the user runs "java-analyser analyse /projects/not-java"
+    Then the command exits with code 2
+    And stderr contains "no Java build structure"
+
+  # UC-001 extension 2c
+  Scenario: Analysis fails when no API key is configured
+    Given no LLM API key is configured
+    And a Maven project exists at "/projects/sample-app"
+    When the user runs "java-analyser analyse /projects/sample-app"
+    Then the command exits with code 1
+    And stderr contains "API key"
+
+  # UC-001 extension 2d / BR-015
+  Scenario: Remote URL analysis fails when git is not on PATH
+    Given "git" is not available on PATH
+    When the user runs "java-analyser analyse https://github.com/example/repo"
+    Then the command exits with code 1
+    And stderr contains "git"
+
+  # UC-001 extension 3–11a / BR-016
+  Scenario: Phase retries on transient LLM API failure
+    Given a Maven project exists at "/projects/sample-app"
+    And the LLM API returns HTTP 429 on the first two calls and HTTP 200 on the third
+    When the user runs "java-analyser analyse /projects/sample-app"
+    Then the command exits with code 0
+    And "llm-calls.jsonl" contains retry entries with "attemptNumber" values 1, 2, and 3
+
+  # UC-001 extension 3–11a / BR-016 — retries exhausted
+  Scenario: Analysis terminates after all retries are exhausted
+    Given a Maven project exists at "/projects/sample-app"
+    And the LLM API returns HTTP 500 on all calls
+    When the user runs "java-analyser analyse /projects/sample-app"
+    Then the command exits with code 3
+    And stderr contains "LLM API error"
+    And at least one "phase-1-result.json" does not exist in the cache
+
+  # UC-001 extension SIGINT
+  Scenario: Cache is flushed when analysis is interrupted
+    Given a Maven project exists at "/projects/sample-app"
+    And an analysis is running and Phase 3 has just completed
+    When the analysis process receives SIGINT
+    Then the command exits with code 130
+    And "phase-1-result.json", "phase-2-result.json", and "phase-3-result.json" exist in the cache
+    And no report file exists in the output directory
+
+----
+
+== UC-002: Resume an Interrupted Analysis
+
+[source,gherkin]
+----
+Feature: Resume an Interrupted Analysis
+
+  Background:
+    Given the analyser is installed
+    And a valid LLM API key is configured
+
+  # UC-002 MSS
+  Scenario: Successful resume from a cache with phases 1–3 completed
+    Given a cache directory exists at "./analysis-cache" with valid phase result files for phases 1, 2, and 3
+    And the project source referenced in the cache metadata is accessible
+    When the user runs "java-analyser resume ./analysis-cache"
+    Then the command exits with code 0
+    And stdout mentions that phases 1, 2, and 3 were loaded from cache
+    And stdout shows execution of phases 4 through 9
+    And the final report exists in the output directory
+
+  # UC-002 / BR-002 — cache preserved
+  Scenario: Existing cache files are not overwritten during resume
+    Given a cache directory with valid phase result files for phases 1, 2, and 3
+    And the checksum of those three files is recorded
+    When the user runs "java-analyser resume ./analysis-cache"
+    Then the checksums of phase-1-result.json, phase-2-result.json, and phase-3-result.json are unchanged
+
+  # UC-002 extension 2a
+  Scenario: Resume fails when cache directory has no valid phase results
+    Given an empty directory at "./empty-cache"
+    When the user runs "java-analyser resume ./empty-cache"
+    Then the command exits with code 1
+    And stderr contains "No recoverable phase results"
+
+  # UC-002 extension 2b — source mismatch
+  Scenario: Resume warns on project source mismatch
+    Given a cache directory references project source "/projects/app-v1"
+    And "/projects/app-v1" no longer exists
+    When the user runs "java-analyser resume ./analysis-cache"
+    Then the command exits with code 2
+    And stderr contains the path "/projects/app-v1"
+
+----
+
+== UC-003: Configure the Analyser
+
+[source,gherkin]
+----
+Feature: Configure the Analyser
+
+  Background:
+    Given the analyser is installed
+
+  # UC-003 MSS
+  Scenario: Successfully set the API key and model
+    When the user runs "java-analyser config api-key sk-ant-test123 model claude-sonnet-4-6"
+    Then the command exits with code 0
+    And the user-level config file "~/.java-analyser/config.yaml" contains "api-key: sk-ant-test123"
+    And the user-level config file contains "model: claude-sonnet-4-6"
+    And stdout confirms the saved keys
+
+  # UC-003 extension 2a — invalid model
+  Scenario: Config command rejects an unrecognized model identifier
+    When the user runs "java-analyser config model unknown-model-xyz"
+    Then the command exits with code 1
+    And stderr mentions "not a recognized model ID"
+    And stderr lists accepted model identifiers
+    And the config file is not written
+
+  # BR-014 — precedence: CLI flag overrides config
+  Scenario: CLI flag takes precedence over the config file setting
+    Given the user-level config file specifies "model: claude-haiku-4-5"
+    And a Maven project exists at "/projects/sample-app"
+    When the user runs "java-analyser analyse /projects/sample-app --model claude-sonnet-4-6"
+    Then the LLM calls in "llm-calls.jsonl" use the model "claude-sonnet-4-6"
+
+  # BR-014 — project-level config
+  Scenario: Project-level config overrides user-level config
+    Given the user-level config file specifies "format: md"
+    And a project-level config file ".java-analyser.yaml" in "/projects/sample-app" specifies "format: adoc"
+    When the user runs "java-analyser analyse /projects/sample-app"
+    Then the output directory contains "report.adoc" and not "report.md"
+
+----

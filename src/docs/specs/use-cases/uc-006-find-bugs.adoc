@@ -1,0 +1,104 @@
+= UC-006: Find Bugs Using the RAG Knowledge Base
+:doctype: article
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectanchors:
+:icons: font
+
+[cols="1,3"]
+|===
+| ID | UC-006
+| Level | User Goal
+| Primary Actor | User (Developer, Software Architect)
+| Supporting Actors | LLM API (system actor)
+| Precedes | —
+| Follows | UC-001 (analysis job must be `INDEXED`)
+|===
+
+== Stakeholders and Interests
+
+[cols="1,3", options="header"]
+|===
+| Stakeholder | Interest
+
+| User
+| Describes a bug or unexpected behaviour in plain language and receives a list of suspect components with justifications, narrowing the area of investigation before opening a debugger or reading source files.
+
+| Development team of the analysed project
+| Fault localisation is grounded in the actual code structure, not generic LLM advice.
+|===
+
+== Preconditions
+
+. A completed analysis job exists with status `INDEXED` (UC-001 + Phase 10 completed).
+. The user has a concrete description of a bug or unexpected behaviour to investigate.
+
+== Trigger
+
+The user selects **Find Bugs** from the query capability menu, types a natural-language description of the bug or unexpected behaviour, and presses **Search**.
+
+== Main Success Scenario
+
+[cols="1,6", options="header"]
+|===
+| Step | Action
+
+| 1
+| The user enters a natural-language bug description (e.g., "When I submit an order with a negative quantity the application does not return an error").
+
+| 2
+| The system embeds the bug description into a query vector.
+
+| 3
+| The system retrieves the top-K knowledge base chunks whose embeddings are most similar to the query vector (<<../business-rules.adoc#BR-021,BR-021>>).
+
+| 4
+| The system submits the retrieved chunks together with the bug description to the LLM using a fault-localisation prompt.
+
+| 5
+| The LLM returns a structured JSON list of suspect components, each with a justification, confidence level, and suggested investigation steps.
+
+| 6
+| The system validates, persists, and renders the fault-localisation report in the browser.
+Components are listed in descending order of confidence and linked to their knowledge base entries.
+
+| 7
+| The user can optionally follow up with a refined description to narrow the results further; the system treats each follow-up as a new query against the same knowledge base.
+|===
+
+== Extensions
+
+[cols="1,6", options="header"]
+|===
+| Condition | Handling
+
+| 3a. Similarity search returns no chunks above the threshold.
+| System informs the user that no relevant knowledge base entries were found for the description and suggests rephrasing the query or broadening the scope.
+
+| 4–5a. LLM call fails after retries.
+| System shows an error, preserves the retrieved chunks for display, and suggests the user review them directly.
+
+| 7a. User submits more than 10 follow-up queries in a single session.
+| System warns the user that extensive querying may consume significant LLM tokens and prompts for confirmation before continuing.
+|===
+
+== Postconditions
+
+Success::
+* A fault-localisation report is persisted in `query_results` and rendered in the browser.
+
+Failure::
+* An error message is shown; the raw retrieved chunks remain visible in the UI for manual review.
+
+== Business Rules
+
+BR-017, BR-018, BR-021
+
+== EARS Requirements
+
+When the user submits a bug description, the system shall embed the description and perform a similarity search before making any LLM call.
+
+When the LLM identifies a suspect component, the system shall include the component's fully-qualified name and the knowledge base source chunk that justifies the suspicion.
+
+When the system returns fault-localisation results, each result shall include a confidence level of High, Medium, or Low.

@@ -1,0 +1,104 @@
+= UC-005: Generate System Documentation from the Knowledge Base
+:doctype: article
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectanchors:
+:icons: font
+
+[cols="1,3"]
+|===
+| ID | UC-005
+| Level | User Goal
+| Primary Actor | User (Technical Writer, Onboarding Developer)
+| Supporting Actors | LLM API (system actor)
+| Precedes | —
+| Follows | UC-001 (analysis job must be `INDEXED`)
+|===
+
+== Stakeholders and Interests
+
+[cols="1,3", options="header"]
+|===
+| Stakeholder | Interest
+
+| User (Technical Writer)
+| Obtains a well-structured, audience-appropriate documentation document as a first draft, dramatically reducing the time needed to produce final documentation.
+
+| User (Onboarding Developer)
+| Receives a concise, developer-oriented explanation of the system they are about to work on.
+
+| Development team of the analysed project
+| Documentation correctly reflects their system; no incorrect information is injected.
+|===
+
+== Preconditions
+
+. A completed analysis job exists with status `INDEXED` (UC-001 + Phase 10 completed).
+. The user has selected the job in the Query view.
+
+== Trigger
+
+The user selects **Generate Documentation** from the query capability menu, chooses a target audience (`DEVELOPER`, `ARCHITECT`, or `MANAGER`), and optionally selects which sections to include.
+
+== Main Success Scenario
+
+[cols="1,6", options="header"]
+|===
+| Step | Action
+
+| 1
+| The user selects the target audience and optional section list and presses **Generate**.
+
+| 2
+| For each requested documentation section, the system retrieves the top-K knowledge base chunks most relevant to that section's topic.
+
+| 3
+| The system submits each section's retrieved chunks to the LLM with a documentation-composition prompt tailored to the target audience.
+
+| 4
+| The LLM returns the composed section text.
+
+| 5
+| The system assembles all sections into a single, navigable AsciiDoc document and renders a preview in the browser.
+
+| 6
+| The system persists the generated documentation to the `query_results` table linked to the job.
+
+| 7
+| The user can export the document as AsciiDoc (`.adoc`) or Markdown (`.md`).
+|===
+
+== Extensions
+
+[cols="1,6", options="header"]
+|===
+| Condition | Handling
+
+| 3–4a. LLM call for a section fails after retries.
+| System marks the section as `UNAVAILABLE` in the assembled document, includes a placeholder note, and continues generating the remaining sections.
+
+| 2a. No chunks are found for a requested section.
+| System includes a placeholder section noting that no knowledge base content was available for that topic.
+|===
+
+== Postconditions
+
+Success::
+* A documentation document is persisted in `query_results` and rendered in the browser.
+* The user can download the document.
+
+Failure::
+* An error message is shown per failed section; successfully generated sections are still available.
+
+== Business Rules
+
+BR-017, BR-018, BR-021
+
+== EARS Requirements
+
+When generating documentation for a `MANAGER` audience, the system shall omit class-level details and focus on business purpose, module responsibilities, and integration landscape.
+
+When generating documentation for a `DEVELOPER` audience, the system shall include class roles, key method descriptions, and relevant design pattern observations.
+
+When the user exports documentation, the system shall include in the document header the job ID, analysis timestamp, tool version, model identifier, and generation timestamp.

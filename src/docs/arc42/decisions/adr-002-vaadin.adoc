@@ -1,0 +1,69 @@
+= ADR-002: Vaadin Flow as Browser UI
+
+[cols="1,2"]
+|===
+| Status | Accepted
+| Date   | 2026-05-26
+|===
+
+== Context
+
+The application needs a browser UI to: configure an analysis run, show live phase-by-phase progress, and present the finished report with a download link.
+The team writes Java; a separate frontend technology would require a second skill set and a second build pipeline.
+
+Options evaluated: Vaadin Flow (Java), React + REST API, Angular + REST API.
+
+== Pugh Matrix
+
+Baseline: Vaadin Flow.
+
+[cols="3,1,1,1", options="header"]
+|===
+| Criterion | Vaadin (baseline) | React + REST | Angular + REST
+
+| Single language (Java only)
+| 0
+| -1
+| -1
+
+| No separate frontend build step
+| 0
+| -1
+| -1
+
+| Server-push for live progress updates
+| 0
+| 0
+| 0
+
+| UI component library quality
+| 0
+| 0
+| 0
+
+| End-to-end type safety (Java → browser)
+| 0
+| -1
+| 0
+
+| *Total*
+| *0*
+| *-3*
+| *-2*
+|===
+
+== Decision
+
+Vaadin Flow.
+
+The primary driver is developer experience: all UI code is written in Java in the same CDI container as the analysis pipeline.
+Real-time progress updates are delivered via Vaadin's built-in server push (WebSocket), with no REST API design required.
+
+== Consequences
+
+* UI logic runs on the server; browser sends only DOM events.
+All state lives in the Vaadin session, which is tied to the Quarkus `@SessionScoped` CDI scope.
+* Vaadin requires a JavaScript runtime in the browser (modern browsers only — not a constraint for this tool's users).
+* Long-running analyses (> 10 min) must keep the WebSocket alive; Quarkus session timeout must be configured to exceed the maximum expected analysis duration.
+* Testing requires either Vaadin TestBench (commercial) or Playwright targeting the rendered HTML.
+* The `vaadin-quarkus-extension` version couples Vaadin and Quarkus release cycles (R-002).

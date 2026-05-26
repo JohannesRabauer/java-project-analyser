@@ -1,0 +1,138 @@
+= Business Rules
+:doctype: article
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectanchors:
+:icons: font
+
+== Purpose
+
+This document lists all business rules referenced by use cases and system use cases.
+Each rule carries a stable BR-NNN identifier.
+When a rule changes, update it here and review all referencing use cases.
+
+== Rules
+
+[cols="1,4,1", options="header"]
+|===
+| ID | Rule | Referenced By
+
+| BR-001
+| Analysis phases shall execute in the fixed order Phase 1 → Phase 2 → … → Phase 9.
+No phase may start before the preceding phase has completed successfully.
+| UC-001, UC-002
+
+| BR-002
+| The system shall persist each completed phase result to the cache directory before starting the next phase.
+A phase result file that does not exist or is zero bytes is not considered completed.
+| UC-001, UC-002
+
+| BR-003
+| An analysis may be resumed only when the cache directory from the previous run contains at least one valid phase result file.
+The system shall not resume from an empty or unreadable cache directory.
+| UC-002
+
+| BR-004
+| The system shall never submit a prompt to the LLM whose estimated token count exceeds the effective context window of the configured model.
+When the context for a phase exceeds the limit, the system shall split the input into smaller chunks and run multiple LLM calls.
+| UC-001, UC-002, SUC-003
+
+| BR-005
+| When a Java project contains more than 500 production classes (files under `src/main/java`), Phase 4 (Class Analysis) shall execute in batches grouped by package.
+Batch size shall be configurable; the default is 50 classes per batch.
+| UC-001
+
+| BR-006
+| The analyser shall not write to, modify, compile, execute, or otherwise alter the analysed project in any way.
+All output goes to the configured output directory and cache directory.
+| UC-001, UC-002
+
+| BR-007
+| The system shall log every LLM call with: phase ID, prompt text, response text, model identifier, token usage (prompt tokens, completion tokens), timestamp, and duration in milliseconds.
+The log format is JSONL; one entry per line.
+| UC-001, UC-002
+
+| BR-008
+| Every generated report shall include in its header: the tool version, the model identifier, the analysis start timestamp, and the analysis end timestamp.
+| UC-001, UC-002
+
+| BR-009
+| LLM phase prompts shall instruct the model to express uncertainty explicitly (e.g., "cannot be determined from the available source") rather than fabricating details.
+The system shall preserve uncertainty markers in phase results without replacing them.
+| UC-001, UC-002
+
+| BR-010
+| The system shall attempt to resolve the full transitive dependency tree using the project's build tool (`mvn dependency:list` or `gradle dependencies`).
+If the build tool invocation fails or is unavailable, the system shall fall back to parsing the build descriptor directly and note the fallback in the report.
+| UC-001
+
+| BR-011
+| The primary output format is AsciiDoc (`.adoc`).
+Markdown (`.md`) output is optional and activated by the `--format md` flag.
+Both formats shall be structurally equivalent.
+| UC-001, UC-003
+
+| BR-012
+| The system shall always emit two machine-readable artifacts alongside the report: `dependency-graph.json` and `responsibility-map.json`.
+These files are emitted regardless of the chosen report format.
+| UC-001
+
+| BR-013
+| Test source files (files under `src/test/`) shall be analysed separately from production source files.
+Test classes shall not appear in the production class inventory (Phase 4) and shall not be cross-referenced as production components.
+| UC-001
+
+| BR-014
+| Configuration is resolved in the following precedence order (highest first):
+
+1. Command-line flags passed at invocation time.
+2. Project-level config file (`.java-analyser.yaml` in the project root).
+3. User-level config file (`~/.java-analyser/config.yaml`).
+4. Built-in defaults.
+
+A value at a higher level overrides the same value at a lower level.
+| UC-003
+
+| BR-015
+| Analysis of a remote repository URL requires `git` to be available on `PATH`.
+If `git` is not found, the system shall report the missing dependency and terminate with exit code 1.
+| UC-001
+
+| BR-016
+| When an LLM API call fails with a transient error (HTTP 429, HTTP 5xx, network timeout), the system shall retry up to three times using exponential backoff: 1 s, 2 s, 4 s.
+If all three retries fail, the system shall mark the phase as failed, flush the cache, and terminate with exit code 3.
+| UC-001, UC-002
+
+| BR-017
+| After all nine analysis phases complete successfully, the system shall execute Phase 10 and embed every phase result into the RAG knowledge base.
+Phase 10 must complete before any query capability (UC-004 through UC-007) is made available for the job.
+If Phase 10 fails, the analysis job status shall remain `COMPLETED` (not `INDEXED`), and the user shall be offered a **Re-index** action in the UI.
+| UC-001, UC-004, UC-005, UC-006, UC-007
+
+| BR-018
+| The RAG knowledge base shall store text chunks together with their vector embeddings in the `rag_chunks` table using the pgvector extension (ADR-008).
+Each chunk record shall include: job ID, phase ID, chunk index, chunk text, embedding vector, and source metadata (class name / package / module when applicable).
+Default chunk size is 512 tokens with a 64-token overlap; both values are configurable via `AnalysisConfig`.
+| UC-001, UC-004, UC-005, UC-006, UC-007
+
+| BR-019
+| All semantic similarity searches against the RAG knowledge base shall use cosine similarity via the pgvector `<=>` operator.
+The similarity threshold below which a chunk is excluded from results is configurable; the default is 0.75.
+| UC-004, UC-005, UC-006, UC-007
+
+| BR-020
+| Every risk finding produced by UC-004 shall be assigned exactly one category (Security, Usability, or Readability) and exactly one severity level (High, Medium, or Low).
+The LLM prompt shall instruct the model to use these values exclusively; the system shall reject and retry any response that uses other values.
+| UC-004
+
+| BR-021
+| For all query capabilities, the number of top-K chunks retrieved per query is configurable via `QueryConfig`.
+Default values: Risk Analysis — 15 chunks; Documentation — 20 chunks per section; Bug Finding — 10 chunks; Feature Assistance — 12 chunks.
+| UC-004, UC-005, UC-006, UC-007
+
+| BR-022
+| Feature assistance queries (UC-007) shall always retrieve at minimum one chunk from Phase 6 (Architecture Analysis) and one chunk from Phase 4 (Class Analysis) in addition to the semantically similar chunks, to ensure the LLM has structural and class-level context.
+If no Phase-6 or Phase-4 chunks exceed the similarity threshold, the system shall include the highest-scoring chunks from those phases regardless of threshold.
+| UC-007
+|===

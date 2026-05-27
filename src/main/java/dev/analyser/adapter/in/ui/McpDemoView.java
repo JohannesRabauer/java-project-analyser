@@ -1,11 +1,12 @@
 package dev.analyser.adapter.in.ui;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.vaadin.flow.component.button.Button;
 import com.vaadin.flow.component.Html;
 import com.vaadin.flow.component.Key;
 import com.vaadin.flow.component.Text;
-import com.vaadin.flow.component.dependency.CssImport;
+import com.vaadin.flow.component.checkbox.Checkbox;
 import com.vaadin.flow.component.html.Div;
 import com.vaadin.flow.component.html.H1;
 import com.vaadin.flow.component.html.H3;
@@ -18,17 +19,27 @@ import com.vaadin.flow.component.textfield.TextField;
 import com.vaadin.flow.router.Route;
 import dev.analyser.adapter.in.mcp.McpDispatcher;
 import dev.analyser.adapter.out.persistence.AnalysisJobRepository;
-import dev.analyser.domain.model.AnalysisJob;
-import dev.analyser.domain.model.AnalysisStatus;
-import java.util.Optional;
-import java.util.UUID;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import jakarta.enterprise.inject.Instance;
+import jakarta.inject.Inject;
+
+import java.util.*;
 
 @Route("")
 public class McpDemoView extends VerticalLayout {
 
     private final McpDispatcher mcpDispatcher;
     private final AnalysisJobRepository jobRepository;
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
 
     private final VerticalLayout chatArea;
     private final TextField inputField;
@@ -36,35 +47,36 @@ public class McpDemoView extends VerticalLayout {
     private final VerticalLayout sidebar;
     private UUID currentJobId;
 
+    private Checkbox useLlmCheckbox;
+    private Checkbox showProtocolCheckbox;
+
+    @Inject
+    Instance<ChatModel> chatLanguageModelInstance;
+
     public McpDemoView(McpDispatcher mcpDispatcher, AnalysisJobRepository jobRepository) {
         this.mcpDispatcher = mcpDispatcher;
         this.jobRepository = jobRepository;
 
-        // Base layout setup
         setSizeFull();
         setSpacing(false);
         setPadding(false);
-        getStyle().set("background-color", "#0f172a"); // sleek dark slate
+        getStyle().set("background-color", "#0f172a");
         getStyle().set("color", "#f8fafc");
         getStyle().set("font-family", "'Outfit', 'Inter', sans-serif");
 
-        // Horizontal Split-like Layout
         HorizontalLayout mainLayout = new HorizontalLayout();
         mainLayout.setSizeFull();
         mainLayout.setSpacing(false);
 
-        // Sidebar Setup
         sidebar = createSidebar();
         mainLayout.add(sidebar);
 
-        // Chat Container
         VerticalLayout chatContainer = new VerticalLayout();
         chatContainer.setSizeFull();
         chatContainer.setPadding(true);
         chatContainer.setSpacing(true);
         chatContainer.getStyle().set("background", "radial-gradient(circle at top right, #1e293b, #0f172a)");
 
-        // Glowing Header
         H1 title = new H1("Java Project Analyser");
         title.getStyle().set("font-size", "1.8rem");
         title.getStyle().set("font-weight", "800");
@@ -76,19 +88,16 @@ public class McpDemoView extends VerticalLayout {
         title.getStyle().set("border-bottom", "1px solid #334155");
         chatContainer.add(title);
 
-        // Chat Bubble Area
         chatArea = new VerticalLayout();
         chatArea.setSizeFull();
         chatArea.getStyle().set("overflow-y", "auto");
         chatArea.getStyle().set("padding", "10px");
         chatArea.setSpacing(true);
 
-        // Initial welcome message
         addAssistantMessage("Hello! I am your Java Project Analyser AI Assistant. I communicate with the backend MCP server using LangChain4J.\n\nTo get started, click **Analyse Current Project** in the sidebar to run the 10-phase pipeline!");
 
         chatContainer.add(chatArea);
 
-        // Input Layout
         HorizontalLayout inputLayout = new HorizontalLayout();
         inputLayout.setWidthFull();
         inputLayout.setSpacing(true);
@@ -135,14 +144,13 @@ public class McpDemoView extends VerticalLayout {
         mcpTitle.getStyle().set("margin-top", "0");
         layout.add(mcpTitle);
 
-        // Status Indicator
         HorizontalLayout statusLayout = new HorizontalLayout();
         statusLayout.setAlignItems(Alignment.CENTER);
         Div dot = new Div();
         dot.setWidth("10px");
         dot.setHeight("10px");
         dot.getStyle().set("border-radius", "50%");
-        dot.getStyle().set("background-color", "#10b981"); // bright green
+        dot.getStyle().set("background-color", "#10b981");
         dot.getStyle().set("box-shadow", "0 0 10px #10b981");
 
         Span statusText = new Span("ACTIVE (SSE/Stdio)");
@@ -153,7 +161,6 @@ public class McpDemoView extends VerticalLayout {
         statusLayout.add(dot, statusText);
         layout.add(statusLayout);
 
-        // Action Buttons
         Button runAnalysis = new Button("Analyse Current Project", new Icon(VaadinIcon.PLAY));
         runAnalysis.setWidthFull();
         runAnalysis.getStyle().set("background", "linear-gradient(135deg, #0284c7, #0369a1)");
@@ -182,12 +189,31 @@ public class McpDemoView extends VerticalLayout {
 
         layout.add(runAnalysis, showSummary, viewReport);
 
-        // Registered Tools List Display
+        H3 configTitle = new H3("AI Client Config");
+        configTitle.getStyle().set("color", "#38bdf8");
+        configTitle.getStyle().set("font-weight", "700");
+        configTitle.getStyle().set("margin-top", "20px");
+        layout.add(configTitle);
+
+        useLlmCheckbox = new Checkbox("Use LangChain4J LLM", false);
+        useLlmCheckbox.getStyle().set("color", "#f8fafc");
+        useLlmCheckbox.addValueChangeListener(e -> {
+            if (e.getValue() && (chatLanguageModelInstance == null || chatLanguageModelInstance.isUnsatisfied())) {
+                addAssistantMessage("⚠️ *No active LangChain4J ChatModel found in Quarkus CDI context. Please configure OpenAI or Ollama in application.properties! Falling back to Local Semantic mode...*");
+                useLlmCheckbox.setValue(false);
+            }
+        });
+
+        showProtocolCheckbox = new Checkbox("Show JSON-RPC Traffic", true);
+        showProtocolCheckbox.getStyle().set("color", "#f8fafc");
+
+        layout.add(useLlmCheckbox, showProtocolCheckbox);
+
         Div toolsHeader = new Div(new Text("Exposed MCP Tools:"));
         toolsHeader.getStyle().set("font-weight", "700");
         toolsHeader.getStyle().set("font-size", "0.9rem");
         toolsHeader.getStyle().set("color", "#94a3b8");
-        toolsHeader.getStyle().set("margin-top", "20px");
+        toolsHeader.getStyle().set("margin-top", "15px");
         layout.add(toolsHeader);
 
         String[] tools = {"analyse_project", "get_analysis_status", "search_codebase", "get_project_summary", "get_ascii_report"};
@@ -209,106 +235,194 @@ public class McpDemoView extends VerticalLayout {
 
     private void sendMessage() {
         String query = inputField.getValue().trim();
-        if (query.isEmpty()) {
-            return;
-        }
+        if (query.isEmpty()) return;
 
         addUserMessage(query);
         inputField.clear();
 
-        // Process message via MCP client simulation
-        if (currentJobId == null) {
+        if (currentJobId == null && !query.toLowerCase().contains("analyse") && !query.toLowerCase().contains("analyze")) {
             addAssistantMessage("No analysis job is currently loaded. Please click **Analyse Current Project** first to register a project and trigger the analysis pipeline!");
             return;
         }
 
-        if (query.toLowerCase().contains("search") || query.toLowerCase().contains("find") || query.toLowerCase().contains("where")) {
-            // Simulate MCP Client calling search_codebase tool
-            addAssistantMessage("🔧 *[LangChain4J McpClient] Automatically invoking tool 'search_codebase'...*");
-            String reqJson = String.format("{\"jsonrpc\":\"2.0\",\"id\":\"view_1\",\"method\":\"tools/call\",\"params\":{\"name\":\"search_codebase\",\"arguments\":{\"jobId\":\"%s\",\"query\":\"%s\"}}}",
-                    currentJobId, query);
-            executeAndDisplayMcp(reqJson);
-        } else if (query.toLowerCase().contains("status") || query.toLowerCase().contains("progress")) {
-            // Simulate get_analysis_status
-            addAssistantMessage("🔧 *[LangChain4J McpClient] Automatically invoking tool 'get_analysis_status'...*");
-            String reqJson = String.format("{\"jsonrpc\":\"2.0\",\"id\":\"view_2\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_analysis_status\",\"arguments\":{\"jobId\":\"%s\"}}}",
-                    currentJobId);
-            executeAndDisplayMcp(reqJson);
-        } else if (query.toLowerCase().contains("summary") || query.toLowerCase().contains("purpose")) {
-            // Simulate get_project_summary
-            addAssistantMessage("🔧 *[LangChain4J McpClient] Automatically invoking tool 'get_project_summary'...*");
-            String reqJson = String.format("{\"jsonrpc\":\"2.0\",\"id\":\"view_3\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_project_summary\",\"arguments\":{\"jobId\":\"%s\"}}}",
-                    currentJobId);
-            executeAndDisplayMcp(reqJson);
-        } else if (query.toLowerCase().contains("report") || query.toLowerCase().contains("ascii")) {
-            // Simulate get_ascii_report
-            addAssistantMessage("🔧 *[LangChain4J McpClient] Automatically invoking tool 'get_ascii_report'...*");
-            String reqJson = String.format("{\"jsonrpc\":\"2.0\",\"id\":\"view_4\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_ascii_report\",\"arguments\":{\"jobId\":\"%s\"}}}",
-                    currentJobId);
-            executeAndDisplayMcp(reqJson);
+        if (useLlmCheckbox.getValue() && chatLanguageModelInstance != null && chatLanguageModelInstance.isResolvable()) {
+            executeLlmMcpFlow(query);
         } else {
-            // Default response
-            addAssistantMessage("I understand your question: \"" + query + "\". Try asking me to 'search' for something, check the 'status' or show the 'summary'!");
+            executeLocalSemanticMcpFlow(query);
         }
     }
 
-    private void executeAndDisplayMcp(String requestJson) {
+    private void executeLlmMcpFlow(String query) {
+        addAssistantMessage("🤖 *[LangChain4J Client] Analyzing request using real LLM and scanning for available MCP Tools...*");
         try {
-            String responseStr = mcpDispatcher.dispatch(requestJson);
+            ChatModel model = chatLanguageModelInstance.get();
+            List<ToolSpecification> toolSpecs = getMcpToolSpecifications();
+            List<ChatMessage> chatMessages = new ArrayList<>();
+            chatMessages.add(new UserMessage("You are an expert AI system assisting with Java project analysis. Use the provided tools to retrieve analysis jobs, project summaries, and codebase search results. Here is the user's request: " + query));
+
+            ChatRequest chatRequest = ChatRequest.builder()
+                    .messages(chatMessages)
+                    .toolSpecifications(toolSpecs)
+                    .build();
+            ChatResponse chatResponse = model.chat(chatRequest);
+            AiMessage aiMessage = chatResponse.aiMessage();
+
+            if (aiMessage.hasToolExecutionRequests()) {
+                for (ToolExecutionRequest toolRequest : aiMessage.toolExecutionRequests()) {
+                    String toolName = toolRequest.name();
+                    String argumentsStr = toolRequest.arguments();
+                    addAssistantMessage("🔧 *[LangChain4J Client] LLM requested tool execution: '" + toolName + "'*");
+
+                    UUID id = UUID.randomUUID();
+                    String reqJson = String.format("{\"jsonrpc\":\"2.0\",\"id\":\"%s\",\"method\":\"tools/call\",\"params\":{\"name\":\"%s\",\"arguments\":%s}}", id, toolName, argumentsStr);
+
+                    if (showProtocolCheckbox.getValue()) {
+                        addJsonRpcTerminalLog("MCP CLIENT -> MCP SERVER (JSON-RPC Request)", reqJson);
+                    }
+
+                    String responseStr = mcpDispatcher.dispatch(reqJson);
+                    if (showProtocolCheckbox.getValue()) {
+                        addJsonRpcTerminalLog("MCP SERVER -> MCP CLIENT (JSON-RPC Response)", responseStr);
+                    }
+
+                    var root = mapper.readTree(responseStr);
+                    String resultText = "";
+                    if (root.has("result") && root.get("result").has("content")) {
+                        var contentArray = root.get("result").get("content");
+                        if (contentArray.isArray() && contentArray.size() > 0) {
+                            resultText = contentArray.get(0).get("text").asText();
+                        }
+                    }
+
+                    chatMessages.add(aiMessage);
+                    chatMessages.add(new ToolExecutionResultMessage(toolRequest.id(), toolRequest.name(), resultText));
+                    ChatResponse finalResponse = model.chat(chatMessages);
+                    addAssistantMessage(finalResponse.aiMessage().text());
+                }
+            } else {
+                addAssistantMessage(aiMessage.text());
+            }
+        } catch (Exception e) {
+            addAssistantMessage("❌ LLM execution failed: " + e.getMessage() + ". Falling back to Local Semantic Mode.");
+            executeLocalSemanticMcpFlow(query);
+        }
+    }
+
+    private void executeLocalSemanticMcpFlow(String query) {
+        String queryLower = query.toLowerCase();
+        String toolName;
+        String reqJson;
+        UUID id = UUID.randomUUID();
+
+        addAssistantMessage("⚡ *[LangChain4J Local Semantic Client] Selecting matching MCP Tool dynamically...*");
+
+        if (queryLower.contains("analyse") || queryLower.contains("analyze") || queryLower.contains("start")) {
+            toolName = "analyse_project";
+            String currentPath = System.getProperty("user.dir").replace("\\", "/");
+            reqJson = String.format("{\"jsonrpc\":\"2.0\",\"id\":\"%s\",\"method\":\"tools/call\",\"params\":{\"name\":\"%s\",\"arguments\":{\"projectPath\":\"%s\"}}}", id, toolName, currentPath);
+        } else if (queryLower.contains("status") || queryLower.contains("progress") || queryLower.contains("state")) {
+            toolName = "get_analysis_status";
+            reqJson = String.format("{\"jsonrpc\":\"2.0\",\"id\":\"%s\",\"method\":\"tools/call\",\"params\":{\"name\":\"%s\",\"arguments\":{\"jobId\":\"%s\"}}}", id, toolName, currentJobId);
+        } else if (queryLower.contains("summary") || queryLower.contains("executive") || queryLower.contains("purpose")) {
+            toolName = "get_project_summary";
+            reqJson = String.format("{\"jsonrpc\":\"2.0\",\"id\":\"%s\",\"method\":\"tools/call\",\"params\":{\"name\":\"%s\",\"arguments\":{\"jobId\":\"%s\"}}}", id, toolName, currentJobId);
+        } else if (queryLower.contains("report") || queryLower.contains("ascii") || queryLower.contains("doc")) {
+            toolName = "get_ascii_report";
+            reqJson = String.format("{\"jsonrpc\":\"2.0\",\"id\":\"%s\",\"method\":\"tools/call\",\"params\":{\"name\":\"%s\",\"arguments\":{\"jobId\":\"%s\"}}}", id, toolName, currentJobId);
+        } else {
+            toolName = "search_codebase";
+            reqJson = String.format("{\"jsonrpc\":\"2.0\",\"id\":\"%s\",\"method\":\"tools/call\",\"params\":{\"name\":\"%s\",\"arguments\":{\"jobId\":\"%s\",\"query\":\"%s\"}}}", id, toolName, currentJobId, query.replace("\"", "\\\""));
+        }
+
+        addAssistantMessage("🔧 *Invoking real MCP Server Tool: '" + toolName + "'*");
+        if (showProtocolCheckbox.getValue()) {
+            addJsonRpcTerminalLog("MCP CLIENT -> MCP SERVER (JSON-RPC Request)", reqJson);
+        }
+
+        try {
+            String responseStr = mcpDispatcher.dispatch(reqJson);
+            if (showProtocolCheckbox.getValue()) {
+                addJsonRpcTerminalLog("MCP SERVER -> MCP CLIENT (JSON-RPC Response)", responseStr);
+            }
+
             var root = mapper.readTree(responseStr);
             if (root.has("result") && root.get("result").has("content")) {
                 var contentArray = root.get("result").get("content");
                 if (contentArray.isArray() && contentArray.size() > 0) {
                     String resultText = contentArray.get(0).get("text").asText();
                     addAssistantMessage(resultText);
+                    if ("analyse_project".equals(toolName)) {
+                        int idIdx = resultText.indexOf("Job ID: ");
+                        if (idIdx != -1) {
+                            String uuidStr = resultText.substring(idIdx + 8, idIdx + 8 + 36);
+                            currentJobId = UUID.fromString(uuidStr);
+                        }
+                    }
                 }
             } else if (root.has("error")) {
-                addAssistantMessage("❌ Error: " + root.get("error").get("message").asText());
+                addAssistantMessage("❌ MCP Server Error: " + root.get("error").get("message").asText());
             }
         } catch (Exception e) {
-            addAssistantMessage("❌ Exception parsing MCP response: " + e.getMessage());
+            addAssistantMessage("❌ Error dispatching to MCP Server: " + e.getMessage());
         }
     }
 
-    private void triggerLocalAnalysis() {
-        addAssistantMessage("🔧 *[LangChain4J McpClient] Triggering tool 'analyse_project'...*");
-        String currentPath = System.getProperty("user.dir");
-        String reqJson = String.format("{\"jsonrpc\":\"2.0\",\"id\":\"view_init\",\"method\":\"tools/call\",\"params\":{\"name\":\"analyse_project\",\"arguments\":{\"projectPath\":\"%s\"}}}",
-                currentPath.replace("\\", "/"));
-
-        try {
-            String responseStr = mcpDispatcher.dispatch(reqJson);
-            var root = mapper.readTree(responseStr);
-            if (root.has("result") && root.get("result").has("content")) {
-                String resultText = root.get("result").get("content").get(0).get("text").asText();
-                addAssistantMessage(resultText);
-
-                // Try to extract UUID
-                int idIdx = resultText.indexOf("Job ID: ");
-                if (idIdx != -1) {
-                    String uuidStr = resultText.substring(idIdx + 8, idIdx + 8 + 36);
-                    currentJobId = UUID.fromString(uuidStr);
-                }
-            }
-        } catch (Exception e) {
-            addAssistantMessage("Error triggering analysis: " + e.getMessage());
-        }
+    private List<ToolSpecification> getMcpToolSpecifications() {
+        List<ToolSpecification> specs = new ArrayList<>();
+        specs.add(ToolSpecification.builder()
+                .name("analyse_project")
+                .description("Ingests a Java project from the local filesystem and starts the 10-phase analysis and RAG indexing pipeline.")
+                .parameters(JsonObjectSchema.builder()
+                        .addStringProperty("projectPath", "The absolute path of the Java project on the filesystem")
+                        .required("projectPath")
+                        .build())
+                .build());
+        specs.add(ToolSpecification.builder()
+                .name("get_analysis_status")
+                .description("Retrieves the real-time status of a running or completed analysis job.")
+                .parameters(JsonObjectSchema.builder()
+                        .addStringProperty("jobId", "The unique UUID of the analysis job")
+                        .required("jobId")
+                        .build())
+                .build());
+        specs.add(ToolSpecification.builder()
+                .name("search_codebase")
+                .description("Queries the indexed knowledge base of a project using vector-based similarity search to locate relevant code chunks.")
+                .parameters(JsonObjectSchema.builder()
+                        .addStringProperty("jobId", "The unique UUID of the analysis job")
+                        .addStringProperty("query", "The vector search query text")
+                        .required("jobId", "query")
+                        .build())
+                .build());
+        specs.add(ToolSpecification.builder()
+                .name("get_project_summary")
+                .description("Gets the high-level business purpose and classification of the project generated during Phase 1.")
+                .parameters(JsonObjectSchema.builder()
+                        .addStringProperty("jobId", "The unique UUID of the analysis job")
+                        .required("jobId")
+                        .build())
+                .build());
+        specs.add(ToolSpecification.builder()
+                .name("get_ascii_report")
+                .description("Gets the complete compiled AsciiDoc architecture and design report for the analyzed project.")
+                .parameters(JsonObjectSchema.builder()
+                        .addStringProperty("jobId", "The unique UUID of the analysis job")
+                        .required("jobId")
+                        .build())
+                .build());
+        return specs;
     }
+
+    private void triggerLocalAnalysis() { sendMessageDirectly("Analyse current project"); }
 
     private void askForSummary() {
-        if (currentJobId == null) {
-            addAssistantMessage("Please run an analysis first!");
-            return;
-        }
-        sendMessageDirectly("summary");
+        if (currentJobId == null) { addAssistantMessage("Please run an analysis first!"); return; }
+        sendMessageDirectly("Show project summary");
     }
 
     private void askForReport() {
-        if (currentJobId == null) {
-            addAssistantMessage("Please run an analysis first!");
-            return;
-        }
-        sendMessageDirectly("report");
+        if (currentJobId == null) { addAssistantMessage("Please run an analysis first!"); return; }
+        sendMessageDirectly("Show ascii report");
     }
 
     private void sendMessageDirectly(String text) {
@@ -343,6 +457,36 @@ public class McpDemoView extends VerticalLayout {
         bubble.getStyle().set("border", "1px solid #334155");
         bubble.getStyle().set("word-break", "break-word");
         chatArea.add(bubble);
+        chatArea.getElement().callJsFunction("scrollTop = this.scrollHeight");
+    }
+
+    private void addJsonRpcTerminalLog(String headerText, String json) {
+        String prettyJson;
+        try {
+            Object obj = mapper.readValue(json, Object.class);
+            prettyJson = mapper.writeValueAsString(obj);
+        } catch (Exception e) { prettyJson = json; }
+
+        String terminalHtml = String.format("""
+            <div style="background-color: #0b0f19; border: 1px solid #38bdf8; border-radius: 8px; margin: 8px 0; width: 100%%; font-family: monospace; overflow: hidden; box-shadow: 0 4px 12px rgba(56, 189, 248, 0.15);">
+                <div style="background-color: #1e293b; padding: 6px 12px; border-bottom: 1px solid #334155; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; gap: 6px;">
+                        <span style="width: 10px; height: 10px; border-radius: 50%%; background-color: #ef4444; display: inline-block;"></span>
+                        <span style="width: 10px; height: 10px; border-radius: 50%%; background-color: #f59e0b; display: inline-block;"></span>
+                        <span style="width: 10px; height: 10px; border-radius: 50%%; background-color: #10b981; display: inline-block;"></span>
+                    </div>
+                    <span style="color: #38bdf8; font-size: 0.75rem; font-weight: bold;">%s</span>
+                </div>
+                <pre style="margin: 0; padding: 12px; color: #34d399; font-size: 0.8rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all;">%s</pre>
+            </div>
+            """, headerText, prettyJson.replace("<", "&lt;").replace(">", "&gt;"));
+
+        Div logContainer = new Div();
+        logContainer.setWidthFull();
+        logContainer.getStyle().set("align-self", "flex-start");
+        Html html = new Html("<div>" + terminalHtml + "</div>");
+        logContainer.add(html);
+        chatArea.add(logContainer);
         chatArea.getElement().callJsFunction("scrollTop = this.scrollHeight");
     }
 }

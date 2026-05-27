@@ -11,35 +11,22 @@ public class PostgreSqlTestResource implements QuarkusTestResourceLifecycleManag
 
     @Override
     public Map<String, String> start() {
-        boolean dockerAvailable = false;
-        try {
-            dockerAvailable = DockerClientFactory.instance().isDockerAvailable();
-        } catch (Throwable t) {
-            // Docker is not available
+        if (!DockerClientFactory.instance().isDockerAvailable()) {
+            throw new IllegalStateException("Docker environment is not available! Tests require a running Docker daemon to spin up the PostgreSQL Testcontainer.");
         }
 
-        if (dockerAvailable) {
-            System.out.println("Docker is available. Starting PostgreSQL Testcontainer...");
-            postgresql = new PostgreSQLContainer<>("postgres:17");
-            postgresql.withDatabaseName("analyser");
-            postgresql.withUsername("analyser");
-            postgresql.withPassword("analyser");
-            postgresql.start();
+        System.out.println("Docker is available. Starting PostgreSQL Testcontainer...");
+        postgresql = new PostgreSQLContainer<>("postgres:17");
+        postgresql.withDatabaseName("analyser");
+        postgresql.withUsername("analyser");
+        postgresql.withPassword("analyser");
+        postgresql.start();
 
-            return Map.of(
-                    "quarkus.datasource.devservices.enabled", "false",
-                    "quarkus.datasource.jdbc.url", postgresql.getJdbcUrl(),
-                    "quarkus.datasource.username", postgresql.getUsername(),
-                    "quarkus.datasource.password", postgresql.getPassword());
-        } else {
-            System.out.println("Docker is NOT available. Falling back to in-memory H2 database with PostgreSQL compatibility mode for testing.");
-            return Map.of(
-                    "quarkus.datasource.db-kind", "h2",
-                    "quarkus.datasource.jdbc.url", "jdbc:h2:mem:analyser;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE",
-                    "quarkus.datasource.username", "analyser",
-                    "quarkus.datasource.password", "analyser",
-                    "quarkus.datasource.devservices.enabled", "false");
-        }
+        return Map.of(
+                "quarkus.datasource.devservices.enabled", "false",
+                "quarkus.datasource.jdbc.url", postgresql.getJdbcUrl(),
+                "quarkus.datasource.username", postgresql.getUsername(),
+                "quarkus.datasource.password", postgresql.getPassword());
     }
 
     @Override

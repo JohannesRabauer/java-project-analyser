@@ -98,6 +98,7 @@
             <version>${testcontainers.version}</version>
             <scope>test</scope>
         </dependency>
+
     </dependencies>
 
     <build>
@@ -146,7 +147,7 @@
                             <generator>
                                 <database>
                                     <name>org.jooq.meta.extensions.ddl.DDLDatabase</name>
-                                    <includes>analysis_jobs</includes>
+                                    <includes>.*</includes>
                                     <properties>
                                         <property>
                                             <key>scripts</key>

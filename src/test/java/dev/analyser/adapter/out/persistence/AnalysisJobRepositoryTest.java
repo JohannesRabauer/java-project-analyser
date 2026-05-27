@@ -6,11 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.analyser.domain.model.AnalysisJob;
 import dev.analyser.domain.model.AnalysisStatus;
+import dev.analyser.domain.model.GitSource;
 import dev.analyser.domain.model.LocalSource;
 import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.sql.SQLException;
@@ -55,6 +57,20 @@ class AnalysisJobRepositoryTest {
         assertEquals(job.source(), updatedJob.source());
         assertWithinOneMicrosecond(job.createdAt(), updatedJob.createdAt());
         assertFalse(updatedJob.updatedAt().isBefore(storedJob.updatedAt()));
+    }
+
+    @Test
+    void uc001_shouldRoundTripAGitSource() {
+        var jobId = UUID.randomUUID();
+        var createdAt = Instant.now().minusSeconds(5);
+        var job = AnalysisJob.create(jobId, new GitSource(URI.create("https://github.com/example/project.git")), createdAt);
+
+        repository.create(job);
+
+        var storedJob = repository.findById(jobId).orElseThrow();
+
+        assertEquals(job.source(), storedJob.source());
+        assertEquals(job.status(), storedJob.status());
     }
 
     @Test

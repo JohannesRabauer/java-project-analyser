@@ -7,8 +7,10 @@ import dev.analyser.domain.model.AnalysisJob;
 import dev.analyser.domain.model.PhaseResult;
 import dev.analyser.domain.model.PhaseStatus;
 import dev.analyser.domain.model.AnalysisStatus;
+import dev.analyser.domain.model.GitSource;
 import dev.analyser.domain.model.LocalSource;
 import dev.analyser.domain.model.ProjectSource;
+import java.net.URI;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -25,6 +27,7 @@ import org.jooq.impl.DSL;
 @ApplicationScoped
 public class AnalysisJobRepository {
 
+    private static final String GIT_SOURCE_PREFIX = "git::";
     private final DataSource dataSource;
 
     public AnalysisJobRepository(DataSource dataSource) {
@@ -47,6 +50,12 @@ public class AnalysisJobRepository {
                 .fetchOptional(this::toDomain);
     }
 
+    public List<AnalysisJob> findAll() {
+        return dsl().selectFrom(ANALYSIS_JOBS)
+                .orderBy(ANALYSIS_JOBS.CREATED_AT.asc())
+                .fetch(this::toDomain);
+    }
+
     public void updateStatus(UUID id, AnalysisStatus status) {
         dsl().update(ANALYSIS_JOBS)
                 .set(ANALYSIS_JOBS.STATUS, status.name())
@@ -59,7 +68,7 @@ public class AnalysisJobRepository {
         return new AnalysisJob(
                 record.getId(),
                 AnalysisStatus.valueOf(record.getStatus()),
-                new LocalSource(Path.of(record.getProjectPath())),
+                toProjectSource(record.getProjectPath()),
                 toInstant(record.getCreatedAt()),
                 toInstant(record.getUpdatedAt()));
     }
@@ -69,7 +78,19 @@ public class AnalysisJobRepository {
             return localSource.rootPath().toString();
         }
 
-        throw new IllegalArgumentException("analysis_jobs.project_path only supports LocalSource");
+        if (source instanceof GitSource gitSource) {
+            return GIT_SOURCE_PREFIX + gitSource.repositoryUrl();
+        }
+
+        throw new IllegalArgumentException("Unsupported project source: " + source.getClass().getSimpleName());
+    }
+
+    private ProjectSource toProjectSource(String storedSource) {
+        if (storedSource.startsWith(GIT_SOURCE_PREFIX)) {
+            return new GitSource(URI.create(storedSource.substring(GIT_SOURCE_PREFIX.length())));
+        }
+
+        return new LocalSource(Path.of(storedSource));
     }
 
     private OffsetDateTime toOffsetDateTime(Instant instant) {

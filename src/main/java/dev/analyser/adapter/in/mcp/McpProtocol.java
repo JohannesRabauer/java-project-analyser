@@ -72,6 +72,48 @@ public class McpProtocol {
             String nextCursor
     ) {}
 
+    public record McpResource(
+            String uri,
+            String name,
+            String description,
+            String mimeType
+    ) {}
+
+    public record ResourcesListResult(
+            List<McpResource> resources,
+            String nextCursor
+    ) {}
+
+    public record ResourceContents(
+            String uri,
+            String mimeType,
+            String text
+    ) {}
+
+    public record ResourcesReadResult(
+            List<ResourceContents> contents
+    ) {}
+
+    public record McpPrompt(
+            String name,
+            String description
+    ) {}
+
+    public record PromptsListResult(
+            List<McpPrompt> prompts,
+            String nextCursor
+    ) {}
+
+    public record PromptMessage(
+            String role,
+            String content
+    ) {}
+
+    public record PromptGetResult(
+            String description,
+            List<PromptMessage> messages
+    ) {}
+
     public record McpContent(
             String type,
             String text

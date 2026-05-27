@@ -25,6 +25,7 @@ public class McpDemoClientView extends VerticalLayout {
     private final VerticalLayout chatArea = new VerticalLayout();
     private final TextField serverBaseUrl = new TextField("MCP Server URL");
     private final TextField projectPath = new TextField("Project Path");
+    private final TextField resourceUriField = new TextField("Resource URI");
     private final TextField queryField = new TextField();
     private UUID currentJobId;
 
@@ -64,14 +65,39 @@ public class McpDemoClientView extends VerticalLayout {
         serverBaseUrl.setWidthFull();
         projectPath.setPlaceholder("/absolute/path/to/project");
         projectPath.setWidthFull();
+        resourceUriField.setValue("mcp://analysis/jobs");
+        resourceUriField.setWidthFull();
 
         Button listTools = sidebarButton("List MCP Tools", VaadinIcon.TOOLS, this::listTools);
+        Button listResources = sidebarButton("List Resources", VaadinIcon.DATABASE, this::listResources);
+        Button listPrompts = sidebarButton("List Prompts", VaadinIcon.COMMENT_O, this::listPrompts);
         Button analyseProject = sidebarButton("Analyse Project", VaadinIcon.PLAY, this::analyseProject);
+        Button listJobs = sidebarButton("Read Jobs Resource", VaadinIcon.LIST, this::showJobsResource);
         Button showStatus = sidebarButton("Show Status", VaadinIcon.TIMER, this::showStatus);
         Button showSummary = sidebarButton("Show Summary", VaadinIcon.INFO_CIRCLE, this::showSummary);
+        Button showStructure = sidebarButton("Show Structure Resource", VaadinIcon.SITEMAP, this::showStructureResource);
         Button showReport = sidebarButton("Show Ascii Report", VaadinIcon.FILE_TEXT, this::showReport);
+        Button showRiskPrompt = sidebarButton("Show Risk Prompt", VaadinIcon.WARNING, () -> showPrompt("review-codebase-risks"));
+        Button showFeaturePrompt = sidebarButton("Show Feature Prompt", VaadinIcon.LIGHTBULB, () -> showPrompt("suggest-feature-impl"));
+        Button readResource = sidebarButton("Read Resource URI", VaadinIcon.LINK, this::readCustomResource);
 
-        layout.add(title, serverBaseUrl, projectPath, listTools, analyseProject, showStatus, showSummary, showReport);
+        layout.add(
+                title,
+                serverBaseUrl,
+                projectPath,
+                resourceUriField,
+                listTools,
+                listResources,
+                listPrompts,
+                analyseProject,
+                listJobs,
+                showStatus,
+                showSummary,
+                showStructure,
+                showReport,
+                showRiskPrompt,
+                showFeaturePrompt,
+                readResource);
         return layout;
     }
 
@@ -126,6 +152,24 @@ public class McpDemoClientView extends VerticalLayout {
         }
     }
 
+    private void listResources() {
+        try {
+            JsonNode response = mcpHttpClient.listResources(serverBaseUrl.getValue());
+            addAssistantMessage(response.toPrettyString());
+        } catch (RuntimeException exception) {
+            addAssistantMessage("Failed to list resources: " + exception.getMessage());
+        }
+    }
+
+    private void listPrompts() {
+        try {
+            JsonNode response = mcpHttpClient.listPrompts(serverBaseUrl.getValue());
+            addAssistantMessage(response.toPrettyString());
+        } catch (RuntimeException exception) {
+            addAssistantMessage("Failed to list prompts: " + exception.getMessage());
+        }
+    }
+
     private void analyseProject() {
         String requestedPath = projectPath.getValue().trim();
         if (requestedPath.isEmpty()) {
@@ -156,6 +200,35 @@ public class McpDemoClientView extends VerticalLayout {
             return;
         }
         invokeTool("get_ascii_report", json().put("jobId", currentJobId.toString()), false);
+    }
+
+    private void showJobsResource() {
+        showResource("mcp://analysis/jobs", true);
+    }
+
+    private void showStructureResource() {
+        if (!ensureJobSelected()) {
+            return;
+        }
+        showResource(jobResourceUri("structure"), false);
+    }
+
+    private void readCustomResource() {
+        String resourceUri = resourceUriField.getValue().trim();
+        if (resourceUri.isEmpty()) {
+            addAssistantMessage("Enter a resource URI first.");
+            return;
+        }
+        showResource(resourceUri, true);
+    }
+
+    private void showPrompt(String promptName) {
+        try {
+            JsonNode response = mcpHttpClient.getPrompt(serverBaseUrl.getValue(), promptName);
+            addAssistantMessage(response.toPrettyString());
+        } catch (RuntimeException exception) {
+            addAssistantMessage("Failed to get prompt: " + exception.getMessage());
+        }
     }
 
     private void searchCodebase() {
@@ -198,6 +271,54 @@ public class McpDemoClientView extends VerticalLayout {
             return;
         }
         currentJobId = UUID.fromString(response.substring(start + 8, start + 44));
+        resourceUriField.setValue(jobResourceUri("summary"));
+    }
+
+    private void showResource(String resourceUri, boolean allowJobSelectionFromResponse) {
+        try {
+            JsonNode response = mcpHttpClient.readResource(serverBaseUrl.getValue(), resourceUri);
+            addAssistantMessage(response.toPrettyString());
+            resourceUriField.setValue(resourceUri);
+            if (allowJobSelectionFromResponse) {
+                captureJobIdFromJobsResource(response);
+            }
+        } catch (RuntimeException exception) {
+            addAssistantMessage("Failed to read resource: " + exception.getMessage());
+        }
+    }
+
+    private void captureJobIdFromJobsResource(JsonNode response) {
+        JsonNode resources = response.path("result").path("contents");
+        if (!resources.isArray() || resources.isEmpty()) {
+            return;
+        }
+
+        JsonNode jobsText = resources.get(0).path("text");
+        if (!jobsText.isTextual()) {
+            return;
+        }
+
+        try {
+            JsonNode jobs = objectMapper.readTree(jobsText.asText());
+            if (!jobs.isArray() || jobs.isEmpty()) {
+                return;
+            }
+
+            JsonNode firstJobId = jobs.get(0).path("jobId");
+            if (!firstJobId.isTextual()) {
+                return;
+            }
+
+            currentJobId = UUID.fromString(firstJobId.asText());
+            resourceUriField.setValue(jobResourceUri("summary"));
+            addAssistantMessage("Selected job from jobs resource: " + currentJobId);
+        } catch (Exception exception) {
+            addAssistantMessage("Could not auto-select a job from the jobs resource: " + exception.getMessage());
+        }
+    }
+
+    private String jobResourceUri(String resourceType) {
+        return "mcp://analysis/job/" + currentJobId + "/" + resourceType;
     }
 
     private ObjectNode json() {

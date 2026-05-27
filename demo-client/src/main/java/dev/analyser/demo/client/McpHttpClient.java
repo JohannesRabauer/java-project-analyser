@@ -29,7 +29,27 @@ public class McpHttpClient {
     }
 
     public JsonNode listTools(String serverBaseUrl) {
-        return dispatch(serverBaseUrl, rpcRequest("tools/list", objectMapper.createObjectNode()));
+        return sendRequest(serverBaseUrl, "tools/list", objectMapper.createObjectNode());
+    }
+
+    public JsonNode listResources(String serverBaseUrl) {
+        return sendRequest(serverBaseUrl, "resources/list", objectMapper.createObjectNode());
+    }
+
+    public JsonNode readResource(String serverBaseUrl, String resourceUri) {
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("uri", resourceUri);
+        return sendRequest(serverBaseUrl, "resources/read", params);
+    }
+
+    public JsonNode listPrompts(String serverBaseUrl) {
+        return sendRequest(serverBaseUrl, "prompts/list", objectMapper.createObjectNode());
+    }
+
+    public JsonNode getPrompt(String serverBaseUrl, String promptName) {
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("name", promptName);
+        return sendRequest(serverBaseUrl, "prompts/get", params);
     }
 
     public String callTool(String serverBaseUrl, String toolName, ObjectNode arguments) {
@@ -37,12 +57,16 @@ public class McpHttpClient {
         params.put("name", toolName);
         params.set("arguments", arguments);
 
-        JsonNode response = dispatch(serverBaseUrl, rpcRequest("tools/call", params));
+        JsonNode response = sendRequest(serverBaseUrl, "tools/call", params);
         JsonNode content = response.path("result").path("content");
         if (!content.isArray() || content.isEmpty()) {
             throw new IllegalStateException("MCP response did not contain tool content");
         }
         return content.get(0).path("text").asText();
+    }
+
+    private JsonNode sendRequest(String serverBaseUrl, String method, ObjectNode params) {
+        return dispatch(serverBaseUrl, rpcRequest(method, params));
     }
 
     private String rpcRequest(String method, ObjectNode params) {

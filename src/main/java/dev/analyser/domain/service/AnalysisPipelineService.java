@@ -2,6 +2,7 @@ package dev.analyser.domain.service;
 
 import dev.analyser.adapter.out.persistence.AnalysisJobRepository;
 import dev.analyser.adapter.out.persistence.RagRepository;
+import dev.analyser.application.port.out.CachePort;
 import dev.analyser.application.port.out.ProjectSourcePort;
 import dev.analyser.domain.model.*;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -22,16 +23,19 @@ public class AnalysisPipelineService {
     private final AnalysisJobRepository jobRepository;
     private final RagRepository ragRepository;
     private final ProjectSourcePort projectSourcePort;
+    private final CachePort cachePort;
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final Map<UUID, String> reportCache = new ConcurrentHashMap<>();
 
     public AnalysisPipelineService(
             AnalysisJobRepository jobRepository,
             RagRepository ragRepository,
-            ProjectSourcePort projectSourcePort) {
+            ProjectSourcePort projectSourcePort,
+            CachePort cachePort) {
         this.jobRepository = jobRepository;
         this.ragRepository = ragRepository;
         this.projectSourcePort = projectSourcePort;
+        this.cachePort = cachePort;
     }
 
     public AnalysisJob startAnalysis(UUID jobId, ProjectSource source) {
@@ -57,9 +61,11 @@ public class AnalysisPipelineService {
         return reportCache.getOrDefault(jobId, "No report available. Ensure the analysis is completed.");
     }
 
-    private void runPipeline(AnalysisJob job) {
+    void runPipeline(AnalysisJob job) {
         UUID jobId = job.id();
         try {
+            var cachedPhaseResults = loadReusablePhaseResults(jobId);
+
             // 1. Load project structure
             ProjectTree tree = projectSourcePort.loadProject(job.source());
 
@@ -69,15 +75,15 @@ public class AnalysisPipelineService {
             String buildDescriptor = tree.buildDescriptor().map(Path::getFileName).map(Path::toString).orElse("pom.xml");
 
             // Execute actual analysis on codebase files
-            runPhase1(jobId, tree, buildDescriptor, readme);
-            runPhase2(jobId, tree);
-            runPhase3(jobId, srcFiles);
-            runPhase4(jobId, srcFiles);
-            runPhase5(jobId, tree);
-            runPhase6(jobId, srcFiles);
-            runPhase7(jobId, srcFiles, testFiles);
-            runPhase8(jobId, srcFiles);
-            runPhase9(jobId, srcFiles, testFiles);
+            reuseOrRunPhase(cachedPhaseResults, 1, () -> runPhase1(jobId, tree, buildDescriptor, readme));
+            reuseOrRunPhase(cachedPhaseResults, 2, () -> runPhase2(jobId, tree));
+            reuseOrRunPhase(cachedPhaseResults, 3, () -> runPhase3(jobId, srcFiles));
+            reuseOrRunPhase(cachedPhaseResults, 4, () -> runPhase4(jobId, srcFiles));
+            reuseOrRunPhase(cachedPhaseResults, 5, () -> runPhase5(jobId, tree));
+            reuseOrRunPhase(cachedPhaseResults, 6, () -> runPhase6(jobId, srcFiles));
+            reuseOrRunPhase(cachedPhaseResults, 7, () -> runPhase7(jobId, srcFiles, testFiles));
+            reuseOrRunPhase(cachedPhaseResults, 8, () -> runPhase8(jobId, srcFiles));
+            reuseOrRunPhase(cachedPhaseResults, 9, () -> runPhase9(jobId, srcFiles, testFiles));
 
             // Complete analysis
             jobRepository.updateStatus(jobId, AnalysisStatus.COMPLETED);
@@ -97,7 +103,46 @@ public class AnalysisPipelineService {
         }
     }
 
-    private void runPhase1(UUID jobId, ProjectTree tree, String buildDescriptor, String readme) {
+    private Map<Integer, PhaseResult> loadReusablePhaseResults(UUID jobId) {
+        var completedPhaseIds = new HashSet<>(cachePort.listCompleted(jobId));
+        var reusablePhaseResults = new LinkedHashMap<Integer, PhaseResult>();
+
+        for (int phaseId = 1; phaseId <= 9; phaseId++) {
+            if (!completedPhaseIds.contains(phaseId)) {
+                break;
+            }
+
+            var cachedPhaseResult = cachePort.load(jobId, phaseId)
+                    .filter(phaseResult -> phaseResult.status() == PhaseStatus.COMPLETED);
+            if (cachedPhaseResult.isEmpty()) {
+                break;
+            }
+
+            reusablePhaseResults.put(phaseId, cachedPhaseResult.orElseThrow());
+        }
+
+        return reusablePhaseResults;
+    }
+
+    private void reuseOrRunPhase(
+            Map<Integer, PhaseResult> cachedPhaseResults,
+            int phaseId,
+            java.util.function.Supplier<PhaseResult> phaseExecution) {
+        var cachedPhaseResult = cachedPhaseResults.get(phaseId);
+        if (cachedPhaseResult != null) {
+            jobRepository.savePhaseResult(cachedPhaseResult);
+            return;
+        }
+
+        persistPhaseResult(phaseExecution.get());
+    }
+
+    private void persistPhaseResult(PhaseResult phaseResult) {
+        cachePort.save(phaseResult);
+        jobRepository.savePhaseResult(phaseResult);
+    }
+
+    private PhaseResult runPhase1(UUID jobId, ProjectTree tree, String buildDescriptor, String readme) {
         // Try to parse buildDescriptor or README for title/summary
         String summary = "A Java-based application.";
         String businessPurpose = "To run as a structured software system solving business requirements.";
@@ -136,10 +181,10 @@ public class AnalysisPipelineService {
         }
         """, summary.replace("\"", "\\\""), businessPurpose.replace("\"", "\\\""), classification);
 
-        jobRepository.savePhaseResult(new PhaseResult(jobId, 1, PhaseStatus.COMPLETED, result, Instant.now()));
+        return new PhaseResult(jobId, 1, PhaseStatus.COMPLETED, result, Instant.now());
     }
 
-    private void runPhase2(UUID jobId, ProjectTree tree) {
+    private PhaseResult runPhase2(UUID jobId, ProjectTree tree) {
         String result = String.format("""
         {
             "modules": [
@@ -152,10 +197,10 @@ public class AnalysisPipelineService {
             ]
         }
         """, tree.javaSourceFiles().size() + tree.testSourceFiles().size());
-        jobRepository.savePhaseResult(new PhaseResult(jobId, 2, PhaseStatus.COMPLETED, result, Instant.now()));
+        return new PhaseResult(jobId, 2, PhaseStatus.COMPLETED, result, Instant.now());
     }
 
-    private void runPhase3(UUID jobId, List<Path> files) {
+    private PhaseResult runPhase3(UUID jobId, List<Path> files) {
         Set<String> packages = new TreeSet<>();
         for (var file : files) {
             try {
@@ -180,10 +225,10 @@ public class AnalysisPipelineService {
         }
         sb.append("  ]\n}");
 
-        jobRepository.savePhaseResult(new PhaseResult(jobId, 3, PhaseStatus.COMPLETED, sb.toString(), Instant.now()));
+        return new PhaseResult(jobId, 3, PhaseStatus.COMPLETED, sb.toString(), Instant.now());
     }
 
-    private void runPhase4(UUID jobId, List<Path> files) {
+    private PhaseResult runPhase4(UUID jobId, List<Path> files) {
         StringBuilder sb = new StringBuilder("{\n  \"classes\": [\n");
         int count = 0;
         int max = Math.min(20, files.size());
@@ -215,10 +260,10 @@ public class AnalysisPipelineService {
         }
         sb.append("  ]\n}");
 
-        jobRepository.savePhaseResult(new PhaseResult(jobId, 4, PhaseStatus.COMPLETED, sb.toString(), Instant.now()));
+        return new PhaseResult(jobId, 4, PhaseStatus.COMPLETED, sb.toString(), Instant.now());
     }
 
-    private void runPhase5(UUID jobId, ProjectTree tree) {
+    private PhaseResult runPhase5(UUID jobId, ProjectTree tree) {
         // Dynamic Technology detection based on Java file imports!
         Set<String> techFound = new LinkedHashSet<>();
         boolean usesVaadin = false;
@@ -255,10 +300,10 @@ public class AnalysisPipelineService {
         }
         sb.append("  ]\n}");
 
-        jobRepository.savePhaseResult(new PhaseResult(jobId, 5, PhaseStatus.COMPLETED, sb.toString(), Instant.now()));
+        return new PhaseResult(jobId, 5, PhaseStatus.COMPLETED, sb.toString(), Instant.now());
     }
 
-    private void runPhase6(UUID jobId, List<Path> files) {
+    private PhaseResult runPhase6(UUID jobId, List<Path> files) {
         // Dynamic REST Endpoint parser!
         List<String> endpoints = new ArrayList<>();
         for (var file : files) {
@@ -310,10 +355,10 @@ public class AnalysisPipelineService {
         sb.append(String.join(",\n", endpoints));
         sb.append("\n  ]\n}");
 
-        jobRepository.savePhaseResult(new PhaseResult(jobId, 6, PhaseStatus.COMPLETED, sb.toString(), Instant.now()));
+        return new PhaseResult(jobId, 6, PhaseStatus.COMPLETED, sb.toString(), Instant.now());
     }
 
-    private void runPhase7(UUID jobId, List<Path> srcFiles, List<Path> testFiles) {
+    private PhaseResult runPhase7(UUID jobId, List<Path> srcFiles, List<Path> testFiles) {
         // Dynamic Code Quality & Risk Scanner!
         List<String> risks = new ArrayList<>();
         for (var file : srcFiles) {
@@ -340,10 +385,10 @@ public class AnalysisPipelineService {
         sb.append(String.join(",\n", risks));
         sb.append("\n  ]\n}");
 
-        jobRepository.savePhaseResult(new PhaseResult(jobId, 7, PhaseStatus.COMPLETED, sb.toString(), Instant.now()));
+        return new PhaseResult(jobId, 7, PhaseStatus.COMPLETED, sb.toString(), Instant.now());
     }
 
-    private void runPhase8(UUID jobId, List<Path> files) {
+    private PhaseResult runPhase8(UUID jobId, List<Path> files) {
         int tests = files.size() * 3;
         if (tests == 0) tests = 10;
         String result = String.format("""
@@ -353,10 +398,10 @@ public class AnalysisPipelineService {
             "testFramework": "JUnit 5 / Testcontainers"
         }
         """, tests);
-        jobRepository.savePhaseResult(new PhaseResult(jobId, 8, PhaseStatus.COMPLETED, result, Instant.now()));
+        return new PhaseResult(jobId, 8, PhaseStatus.COMPLETED, result, Instant.now());
     }
 
-    private void runPhase9(UUID jobId, List<Path> srcFiles, List<Path> testFiles) {
+    private PhaseResult runPhase9(UUID jobId, List<Path> srcFiles, List<Path> testFiles) {
         // Dynamic Architectural detection!
         boolean hexagonal = srcFiles.stream().anyMatch(p -> p.toString().contains("adapter") || p.toString().contains("port"));
         String style = hexagonal ? "Hexagonal Architecture (Ports and Adapters)" : "Layered Model-View-Controller Architecture";
@@ -367,7 +412,7 @@ public class AnalysisPipelineService {
             "violations": []
         }
         """, style);
-        jobRepository.savePhaseResult(new PhaseResult(jobId, 9, PhaseStatus.COMPLETED, result, Instant.now()));
+        return new PhaseResult(jobId, 9, PhaseStatus.COMPLETED, result, Instant.now());
     }
 
     private void runPhase10(UUID jobId, String report, ProjectTree tree) {

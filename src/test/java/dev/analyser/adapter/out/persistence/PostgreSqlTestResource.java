@@ -15,8 +15,8 @@ public class PostgreSqlTestResource implements QuarkusTestResourceLifecycleManag
             throw new IllegalStateException("Docker environment is not available! Tests require a running Docker daemon to spin up the PostgreSQL Testcontainer.");
         }
 
-        System.out.println("Docker is available. Starting PostgreSQL Testcontainer...");
-        postgresql = new PostgreSQLContainer<>("postgres:17");
+        System.out.println("Docker is available. Starting pgvector PostgreSQL Testcontainer...");
+        postgresql = new PostgreSQLContainer<>("pgvector/pgvector:pg17");
         postgresql.withDatabaseName("analyser");
         postgresql.withUsername("analyser");
         postgresql.withPassword("analyser");

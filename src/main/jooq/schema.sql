@@ -20,5 +20,7 @@ CREATE TABLE rag_chunks (
     job_id UUID NOT NULL,
     phase_id INT NOT NULL,
     content TEXT NOT NULL,
-    embedding DOUBLE PRECISION ARRAY NOT NULL
+    -- Flyway V3 promotes this column to pgvector VECTOR(384) at runtime.
+    -- jOOQ's DDLDatabase parser in this build cannot parse VECTOR types yet.
+    embedding TEXT NOT NULL
 );

@@ -1,10 +1,13 @@
 # Java Project Analyser
 
-This repository now contains the issue #4 scaffold for Quarkus, PostgreSQL, Flyway, jOOQ, and Docker Compose profiles.
+This repository now contains two separate applications:
+
+- the MCP server at the repository root
+- the standalone Vaadin demo client in `demo-client/`
 
 ## Quickstart
 
-Run the full local stack with one command:
+Run the MCP server stack with one command:
 
 ```sh
 docker compose --profile local up
@@ -13,7 +16,7 @@ docker compose --profile local up
 The local profile starts:
 - `db` with `pgvector/pgvector:pg17`
 - `ollama` with `ollama/ollama`
-- `app` with the Quarkus JVM image
+- `app` with the MCP server Quarkus JVM image
 
 ## Environment
 
@@ -25,16 +28,34 @@ Copy `.env.example` to `.env` before using cloud profiles.
 
 ## Local development
 
-Run the Maven verification build:
+Run the MCP server verification build:
 
 ```sh
 ./mvnw clean verify
 ```
 
-Start Quarkus dev mode:
+Start the MCP server in Quarkus dev mode:
 
 ```sh
 ./mvnw quarkus:dev
 ```
 
 The Quarkus Dev UI is available at <http://localhost:8080/q/dev/>.
+
+## Demo client
+
+The Vaadin demo client is a separate application under `demo-client/`.
+
+Run its tests:
+
+```sh
+cd demo-client && ./mvnw test
+```
+
+Start it in dev mode:
+
+```sh
+cd demo-client && ./mvnw quarkus:dev
+```
+
+The demo client defaults to port `8082` and expects the MCP server at `http://localhost:8080`.

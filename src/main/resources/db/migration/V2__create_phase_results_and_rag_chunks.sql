@@ -1,12 +1,4 @@
-CREATE TABLE analysis_jobs (
-    id UUID PRIMARY KEY,
-    status VARCHAR(32) NOT NULL,
-    project_path TEXT NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
-);
-
-CREATE TABLE phase_results (
+CREATE TABLE IF NOT EXISTS phase_results (
     job_id UUID NOT NULL,
     phase_id INT NOT NULL,
     status VARCHAR(32) NOT NULL,
@@ -15,7 +7,7 @@ CREATE TABLE phase_results (
     PRIMARY KEY (job_id, phase_id)
 );
 
-CREATE TABLE rag_chunks (
+CREATE TABLE IF NOT EXISTS rag_chunks (
     id UUID PRIMARY KEY,
     job_id UUID NOT NULL,
     phase_id INT NOT NULL,

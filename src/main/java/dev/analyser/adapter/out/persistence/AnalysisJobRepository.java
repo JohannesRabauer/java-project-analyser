@@ -1,8 +1,11 @@
 package dev.analyser.adapter.out.persistence;
 
 import static generated.jooq.tables.AnalysisJobs.ANALYSIS_JOBS;
+import static generated.jooq.tables.PhaseResults.PHASE_RESULTS;
 
 import dev.analyser.domain.model.AnalysisJob;
+import dev.analyser.domain.model.PhaseResult;
+import dev.analyser.domain.model.PhaseStatus;
 import dev.analyser.domain.model.AnalysisStatus;
 import dev.analyser.domain.model.LocalSource;
 import dev.analyser.domain.model.ProjectSource;
@@ -11,6 +14,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
@@ -74,6 +78,33 @@ public class AnalysisJobRepository {
 
     private Instant toInstant(OffsetDateTime offsetDateTime) {
         return offsetDateTime.toInstant();
+    }
+
+    public void savePhaseResult(PhaseResult phaseResult) {
+        dsl().insertInto(PHASE_RESULTS)
+                .set(PHASE_RESULTS.JOB_ID, phaseResult.jobId())
+                .set(PHASE_RESULTS.PHASE_ID, phaseResult.phaseId())
+                .set(PHASE_RESULTS.STATUS, phaseResult.status().name())
+                .set(PHASE_RESULTS.RESULT_JSON, phaseResult.resultJson())
+                .set(PHASE_RESULTS.COMPLETED_AT, toOffsetDateTime(phaseResult.completedAt()))
+                .onDuplicateKeyUpdate()
+                .set(PHASE_RESULTS.STATUS, phaseResult.status().name())
+                .set(PHASE_RESULTS.RESULT_JSON, phaseResult.resultJson())
+                .set(PHASE_RESULTS.COMPLETED_AT, toOffsetDateTime(phaseResult.completedAt()))
+                .execute();
+    }
+
+    public List<PhaseResult> getPhaseResults(UUID jobId) {
+        return dsl().selectFrom(PHASE_RESULTS)
+                .where(PHASE_RESULTS.JOB_ID.eq(jobId))
+                .orderBy(PHASE_RESULTS.PHASE_ID.asc())
+                .fetch(rec -> new PhaseResult(
+                        rec.getJobId(),
+                        rec.getPhaseId(),
+                        PhaseStatus.valueOf(rec.getStatus()),
+                        rec.getResultJson(),
+                        toInstant(rec.getCompletedAt())
+                ));
     }
 
     private DSLContext dsl() {

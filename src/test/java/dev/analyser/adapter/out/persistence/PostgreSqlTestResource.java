@@ -2,6 +2,7 @@ package dev.analyser.adapter.out.persistence;
 
 import io.quarkus.test.common.QuarkusTestResourceLifecycleManager;
 import java.util.Map;
+import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 public class PostgreSqlTestResource implements QuarkusTestResourceLifecycleManager {
@@ -10,23 +11,45 @@ public class PostgreSqlTestResource implements QuarkusTestResourceLifecycleManag
 
     @Override
     public Map<String, String> start() {
-        postgresql = new PostgreSQLContainer<>("postgres:17");
-        postgresql.withDatabaseName("analyser");
-        postgresql.withUsername("analyser");
-        postgresql.withPassword("analyser");
-        postgresql.start();
+        boolean dockerAvailable = false;
+        try {
+            dockerAvailable = DockerClientFactory.instance().isDockerAvailable();
+        } catch (Throwable t) {
+            // Docker is not available
+        }
 
-        return Map.of(
-                "quarkus.datasource.devservices.enabled", "false",
-                "quarkus.datasource.jdbc.url", postgresql.getJdbcUrl(),
-                "quarkus.datasource.username", postgresql.getUsername(),
-                "quarkus.datasource.password", postgresql.getPassword());
+        if (dockerAvailable) {
+            System.out.println("Docker is available. Starting PostgreSQL Testcontainer...");
+            postgresql = new PostgreSQLContainer<>("postgres:17");
+            postgresql.withDatabaseName("analyser");
+            postgresql.withUsername("analyser");
+            postgresql.withPassword("analyser");
+            postgresql.start();
+
+            return Map.of(
+                    "quarkus.datasource.devservices.enabled", "false",
+                    "quarkus.datasource.jdbc.url", postgresql.getJdbcUrl(),
+                    "quarkus.datasource.username", postgresql.getUsername(),
+                    "quarkus.datasource.password", postgresql.getPassword());
+        } else {
+            System.out.println("Docker is NOT available. Falling back to in-memory H2 database with PostgreSQL compatibility mode for testing.");
+            return Map.of(
+                    "quarkus.datasource.db-kind", "h2",
+                    "quarkus.datasource.jdbc.url", "jdbc:h2:mem:analyser;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE",
+                    "quarkus.datasource.username", "analyser",
+                    "quarkus.datasource.password", "analyser",
+                    "quarkus.datasource.devservices.enabled", "false");
+        }
     }
 
     @Override
     public void stop() {
         if (postgresql != null) {
-            postgresql.stop();
+            try {
+                postgresql.stop();
+            } catch (Throwable t) {
+                // ignore
+            }
         }
     }
 }

@@ -50,6 +50,9 @@ public class McpServerTest {
         assertTrue(root.has("result"));
         assertEquals("2024-11-05", root.get("result").get("protocolVersion").asText());
         assertEquals("Java-Project-Analyser-MCP", root.get("result").get("serverInfo").get("name").asText());
+        assertTrue(root.get("result").get("capabilities").get("tools").get("listChanged").asBoolean());
+        assertTrue(root.get("result").get("capabilities").get("resources").get("subscribe").asBoolean());
+        assertTrue(root.get("result").get("capabilities").get("prompts").get("listChanged").asBoolean());
     }
 
     @Test
@@ -209,6 +212,42 @@ public class McpServerTest {
         var root = mapper.readTree(responseStr);
         assertTrue(root.has("error"));
         assertEquals(-32601, root.get("error").get("code").asInt());
+    }
+
+    @Test
+    public void testMissingMethodReturnsInvalidRequest() throws Exception {
+        String request = """
+        {
+            "jsonrpc": "2.0",
+            "id": 100
+        }
+        """;
+
+        String responseStr = dispatcher.dispatch(request);
+        var root = mapper.readTree(responseStr);
+
+        assertEquals(-32600, root.get("error").get("code").asInt());
+        assertTrue(root.get("error").get("message").asText().contains("missing method"));
+    }
+
+    @Test
+    public void testUnknownPromptReturnsInvalidParams() throws Exception {
+        String request = """
+        {
+            "jsonrpc": "2.0",
+            "id": "bad_prompt",
+            "method": "prompts/get",
+            "params": {
+                "name": "unknown-prompt"
+            }
+        }
+        """;
+
+        String responseStr = dispatcher.dispatch(request);
+        var root = mapper.readTree(responseStr);
+
+        assertEquals(-32602, root.get("error").get("code").asInt());
+        assertTrue(root.get("error").get("message").asText().contains("Unknown prompt"));
     }
 
     private UUID seedJobWithPhaseResult(int phaseId, String resultJson) {

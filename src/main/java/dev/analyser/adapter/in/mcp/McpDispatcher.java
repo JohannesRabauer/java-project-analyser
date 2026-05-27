@@ -51,6 +51,10 @@ public class McpDispatcher {
     }
 
     private McpResponse processRequest(McpRequest request) {
+        if (!"2.0".equals(request.jsonrpc())) {
+            return McpResponse.error(request.id(), -32600, "Invalid Request: jsonrpc must be 2.0");
+        }
+
         String method = request.method();
         if (method == null) {
             return McpResponse.error(request.id(), -32600, "Invalid Request: missing method");
@@ -72,9 +76,9 @@ public class McpDispatcher {
     private McpResponse handleInitialize(McpRequest request) {
         ServerInfo info = new ServerInfo("Java-Project-Analyser-MCP", "1.0.0");
         ServerCapabilities capabilities = new ServerCapabilities(
-                Map.of(), // tools capability
-                Map.of(), // resources capability
-                Map.of()  // prompts capability
+                Map.of("listChanged", true),
+                Map.of("listChanged", true, "subscribe", true),
+                Map.of("listChanged", true)
         );
         InitializeResult result = new InitializeResult(McpProtocol.PROTOCOL_VERSION, capabilities, info);
         return McpResponse.success(request.id(), result);

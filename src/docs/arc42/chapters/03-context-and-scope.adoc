@@ -2,13 +2,15 @@
 
 == Business Context
 
-The Java Project Analyser sits between a user who needs to understand an unfamiliar Java codebase and the LLM that produces the analysis.
-It abstracts away prompt engineering, chunking, caching, retry logic, embedding, vector storage, and report rendering.
+The Java Project Analyser is a headless, multi-transport Model Context Protocol (MCP) server. It sits between external AI systems (such as Cursor, VS Code, or Claude Desktop) and the LLMs/database that execute analysis and search capabilities.
+It abstracts away prompt engineering, parsing, caching, vector indexing, and report rendering behind a standard protocol interface.
 
-The system operates in two sequential modes:
+The system supports two operating modes:
 
-. **Analyse** — a ten-phase pipeline extracts knowledge from source code and indexes it into the RAG knowledge base.
-. **Query** — the user asks questions (risk analysis, documentation, bug finding, feature guidance) that are answered by combining semantic retrieval from the knowledge base with LLM generation.
+. **Analyse** — a ten-phase pipeline extracts knowledge from a Java codebase (from filesystem or Git) and indexes it into the PostgreSQL RAG database.
+. **Query** — the client AI asks questions or executes semantic retrieval over codebase chunks via the standard MCP tool and resource endpoints.
+
+A separate **Vaadin MCP Client Demo** connects to the server as an external client, demonstrating how an LLM utilizes the MCP server tools to interact with a human.
 
 == System Context Diagram
 
@@ -18,25 +20,32 @@ The system operates in two sequential modes:
 !include <C4/C4_Context>
 LAYOUT_WITH_LEGEND()
 
-title System Context — Java Project Analyser
+title System Context — Java Project Analyser (MCP Server)
 
-Person(user, "Analyst / Developer", "Architect, Developer,\nTechnical Writer, or\nProject Manager")
+Person(user, "Developer / Analyst", "Uses an IDE or the Vaadin Web App to interact with an AI assistant")
 
-System(analyser, "Java Project Analyser", "Quarkus + Vaadin application.\nDrives a 10-phase LLM analysis pipeline,\nindexes results into a RAG knowledge base,\nand answers queries via retrieval-augmented generation.")
+System_Ext(ai_client, "External AI Assistant", "Cursor, Claude Desktop, Claude Code, or IDE extensions communicating via MCP")
 
-SystemDb(postgres, "PostgreSQL + pgvector", "Stores analysis jobs, phase results,\nRAG chunks with embeddings,\nand query results.")
+System(mcp_server, "Java Project Analyser (MCP Server)", "Quarkus-based headless MCP Server.\nDrives the analysis pipeline,\nindexes codebase to pgvector RAG database,\nand exposes tools, resources, and prompts.")
 
-System_Ext(ollama, "Ollama", "Local LLM server running\nopen-weight models\n(local profile only)")
-System_Ext(openai, "OpenAI API", "Cloud LLM + embedding service\n(openai profile)")
-System_Ext(anthropic, "Anthropic API", "Cloud LLM service\n(anthropic profile)")
-System_Ext(git, "Git Repository", "Remote source repository\n(optional — pull on request)")
+System(vaadin_client, "Vaadin MCP Demo Client", "Decoupled web chat application.\nConnects to MCP Server via SSE to showcase capabilities.")
 
-Rel(user, analyser, "Configures analysis;\nruns queries; views reports", "HTTPS — browser")
-Rel(analyser, postgres,   "Persists jobs, RAG chunks,\nquery results; runs similarity search", "JDBC")
-Rel(analyser, ollama,    "Phase prompts + embeddings", "HTTP :11434")
-Rel(analyser, openai,    "Phase prompts + embeddings", "HTTPS")
-Rel(analyser, anthropic, "Phase prompts", "HTTPS")
-Rel(analyser, git, "Clones repository\n(on demand)", "Git / HTTPS / SSH")
+SystemDb(postgres, "PostgreSQL + pgvector", "Stores analysis jobs, phase results,\nRAG chunks with embeddings.")
+
+System_Ext(ollama, "Ollama", "Local LLM server (local profile only)")
+System_Ext(openai, "OpenAI API", "Cloud LLM + embeddings (openai profile)")
+System_Ext(anthropic, "Anthropic API", "Cloud LLM service (anthropic profile)")
+System_Ext(git, "Git Repository", "Remote source repository")
+
+Rel(user, ai_client, "Instructs / chats with")
+Rel(user, vaadin_client, "Chats in browser", "HTTPS")
+Rel(vaadin_client, mcp_server, "Calls tools & reads resources", "HTTP / SSE")
+Rel(ai_client, mcp_server, "Exchanges JSON-RPC 2.0 messages", "Stdio / SSE")
+Rel(mcp_server, postgres,   "Persists jobs, RAG chunks", "JDBC")
+Rel(mcp_server, ollama,    "Prompts + embeddings", "HTTP :11434")
+Rel(mcp_server, openai,    "Prompts + embeddings", "HTTPS")
+Rel(mcp_server, anthropic, "Prompts", "HTTPS")
+Rel(mcp_server, git, "Clones repository (on demand)", "Git")
 @enduml
 ....
 

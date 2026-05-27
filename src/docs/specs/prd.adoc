@@ -1,6 +1,6 @@
 = Java Project Analyser — Product Requirements Document
 Johannes Rabauer <rabauer.dev@gmail.com>
-v2.0, 2026-05-26
+v3.0, 2026-05-27
 :doctype: article
 :toc: left
 :toclevels: 3
@@ -14,14 +14,14 @@ v2.0, 2026-05-26
 
 === Purpose
 
-The Java Project Analyser is an AI-assisted tool that ingests a Java codebase, produces a structured knowledge model, and persists that model as a RAG (Retrieval-Augmented Generation) knowledge base.
-Once indexed, the knowledge base powers four interactive query capabilities: risk analysis, documentation generation, LLM-assisted bug finding, and LLM-assisted feature implementation guidance.
+The Java Project Analyser is an AI-assisted Model Context Protocol (MCP) server that ingests a Java codebase, drives a ten-phase LLM analysis pipeline, and persists that model as a RAG (Retrieval-Augmented Generation) knowledge base.
+The system is built as an AI-first tool: its primary interfaces are MCP tools, resources, and prompts, enabling any MCP-compliant AI system (e.g., Cursor, Claude Desktop, Claude Code) to analyze codebases and leverage the RAG database to assist with developer queries.
 
 === Problem Statement
 
-Understanding an unfamiliar Java codebase from first principles is time-consuming.
-Developers, architects, and technical writers typically spend days reading source files, build descriptors, and test suites before they can form a coherent mental model of a system.
-This tool automates that initial understanding through a large-language-model analysis pipeline, then keeps that understanding *alive and queryable* — so that every subsequent question (``where are the security risks?'', ``help me add a feature'') is answered in context rather than from scratch.
+Understanding and working within unfamiliar Java codebases is a massive cognitive tax for both human developers and AI coding assistants.
+While standard AI assistants have limited context windows and cannot easily navigate complex structural patterns, this system automates deep structural analysis through a background pipeline and indexes the resulting knowledge model into a PostgreSQL database.
+By exposing this indexed model over the Model Context Protocol, external AI systems can instantly retrieve exact code contexts, module hierarchies, test coverage assessments, and api endpoints without consuming massive prompt tokens or hallucinating details.
 
 === Target Users
 
@@ -29,35 +29,37 @@ This tool automates that initial understanding through a large-language-model an
 |===
 | User Group | Context
 
-| Software Architects
-| Reviewing an acquired or inherited system before committing to an architectural change, or running a risk/quality audit.
+| External AI Systems
+| LLM-based autonomous coding agents, editors (e.g., Cursor, VS Code with Copilot, Claude Desktop) that need structured, low-latency, deep context about a Java project's architecture, dependencies, and risks.
 
-| Onboarding Developers
-| Getting up to speed on a service they have just joined; locating which parts of the code are relevant to a new feature.
+| Software Architects (via AI)
+| Auditing an unfamiliar system for compliance, security, or readability by instructing their AI agent to run codebase queries.
+
+| Onboarding Developers (via AI)
+| Navigating a newly assigned service, asking their IDE agent to locate feature implementation points or explain module hierarchies using the MCP tools.
 
 | Technical Writers
-| Producing documentation for a system they did not build; using the generated documentation as a first draft.
-
-| Project Managers / Leads
-| Understanding technical scope before planning a migration, audit, or sprint; identifying quality risks early.
-
-| Developers working on the analysed project
-| Finding user-described bugs faster; exploring the safest implementation path for a new feature.
+| Creating architecture documentation by prompting their AI assistant to fetch structured phase reports from the MCP server's resources.
 |===
 
 === System Classification
 
-The Java Project Analyser is a **browser-accessible service tool** backed by a persistent knowledge base.
-It runs as a Quarkus application behind a Vaadin browser UI.
-Users interact with it via the browser: they trigger analysis of a Java project, monitor the pipeline, then query the resulting knowledge base through interactive query views.
+The Java Project Analyser is a **headless, multi-transport Model Context Protocol (MCP) Server** backed by a persistent RAG database (PostgreSQL + pgvector).
+It supports:
+- **Stdio Transport**: JSON-RPC over Standard Input/Output for local IDE extensions (Cursor, VS Code) and command-line AI tools.
+- **SSE (Server-Sent Events) Transport**: HTTP-based JSON-RPC for remote clients and web interfaces.
+
+A completely separate and decoupled part of the application is the **Vaadin MCP Client Demo**.
+This is a standard browser-based chat application that connects to the MCP server over SSE. It uses LangChain4J's MCP client integration to let a human chat with an LLM, which dynamically uses the MCP server's tools to fetch codebase context.
 
 ---
 
 == Analysis Pipeline
 
 The analysis pipeline consists of ten sequential phases.
+The pipeline can be triggered on any project path in the filesystem or a git repository URL via the MCP tool interface.
 Phases 1–9 extract and synthesise knowledge from the source code.
-Phase 10 embeds and persists every phase result into the PostgreSQL-backed RAG knowledge base so that all query capabilities can retrieve relevant context without re-running the LLM pipeline.
+Phase 10 embeds and persists every phase result into the PostgreSQL-backed RAG knowledge base.
 
 === Phase 1 — Application Purpose Analysis
 
@@ -68,610 +70,151 @@ Establish the high-level reason for the application's existence before examining
 * Project root directory or repository URL.
 * Build descriptor files (`pom.xml`, `build.gradle`, `settings.gradle`).
 * Top-level `README` files.
-* Main application entry points (classes annotated `@SpringBootApplication`, `main` methods, etc.).
 
 ==== Processing
 The analyser shall:
-
 . Extract project coordinates, description fields, and declared plugins from the build descriptor.
 . Locate and read any `README.md` / `README.adoc` file.
 . Identify the application's main entry point class.
 . Submit the collected context to the LLM with a prompt focused on business purpose, not implementation.
 
 ==== Outputs
-
 Executive Summary::
 One- to three-sentence description of what the application does.
-
 Business Purpose::
-Explanation of the business problem the system solves.
-
+Why the system exists; the business problem it solves.
 Main Functionalities::
-Bullet list of major capabilities inferred from the codebase.
-
-User Groups::
-Identified categories of actors who interact with the system.
-
+Bullet list of major capabilities.
 System Classification::
 One of: Web Application, Backend Service, Batch Processor, Integration Platform, Library / Framework, Desktop Application, Mobile Backend, Other.
 
 ---
 
 === Phase 2 — Module Analysis
-
-==== Goal
-Identify the logical building blocks of the application and map their responsibilities and inter-dependencies.
-
-==== Inputs
-* Maven / Gradle multi-module structure (if present).
-* Directory layout at the top level of the source tree.
-* Build descriptor references between modules.
-
-==== Processing
-For each identified module the analyser shall:
-
-. Determine the module's declared name and build coordinates.
-. Read its own build descriptor for declared dependencies on other modules.
-. Infer responsibilities from package naming and class counts.
-. Submit per-module context to the LLM.
-
-==== Outputs
-
-Per module:
-
-Module Overview::
-Name, one-sentence purpose, and primary responsibility.
-
-Functional Scope::
-Description of the functionality owned by the module.
-
-Dependencies::
-* Incoming dependencies (which modules depend on this one).
-* Outgoing dependencies (which modules this one depends on).
-
-Collaboration::
-How the module interacts with sibling modules at runtime or compile-time.
-
-Importance::
-Qualitative criticality rating: Core, Supporting, or Peripheral.
-
----
+Examines multi-module structures, build projects, and core boundaries.
 
 === Phase 3 — Package Analysis
-
-==== Goal
-Understand how responsibilities are distributed across Java packages within each module.
-
-==== Inputs
-* Recursive directory listing of all `src/main/java` package trees.
-* Class names and counts per package.
-* Import relationships between packages (derived statically).
-
-==== Processing
-For each package the analyser shall:
-
-. List all types (classes, interfaces, enums, records) it contains.
-. Derive the package's architectural role from naming conventions and annotation usage.
-. Identify cross-package import relationships.
-. Submit per-package context to the LLM.
-
-==== Outputs
-
-Per package:
-
-Package Purpose::
-Business and technical responsibility of the package.
-
-Package Contents::
-Types of components present (controllers, services, repositories, domain objects, DTOs, etc.).
-
-Relationships::
-Connections to other packages (imports, injection targets).
-
-Architectural Role::
-One of: API Layer, Service Layer, Domain Layer, Persistence Layer, Infrastructure Layer, Configuration Layer, Security Layer, Utility Layer, Other.
-
----
+Maps package hierarchies, namespaces, and cohesion metrics.
 
 === Phase 4 — Class Analysis
+Analyzes key classes, high-priority models, and interfaces.
 
-==== Goal
-Understand individual implementation components.
+=== Phase 5 — Dependencies & Technology Stack
+Discovers imported libraries, frameworks, database drivers, and runtime requirements.
 
-==== Inputs
-* Full source of every `.java` file under `src/main/java`.
-* Annotations present on the class.
-* Field declarations and their types.
-* Method signatures.
-* Import statements.
+=== Phase 6 — Architectural Patterns & Styles
+Identifies structural styles (e.g., Hexagonal, MVC, Layered, Event-Driven) and design pattern compliance.
 
-==== Processing
-For each class the analyser shall:
+=== Phase 7 — Test Suite & Coverage Assessment
+Analyzes testing types (Unit, Integration, E2E), libraries, and code coverage gaps.
 
-. Extract class metadata: name, package, annotations, supertype, implemented interfaces.
-. Identify all injected or composed dependencies.
-. List public and package-visible methods with their signatures.
-. Determine the lifecycle role from annotation and naming patterns.
-. Submit per-class context to the LLM.
-. For large source trees (>500 classes), prioritize classes annotated as controllers, services, domain entities, and configuration; defer utility and generated classes to a lower-priority pass.
-
-==== Outputs
-
-Per class:
-
-Class Summary::
-Name, responsibility, one-sentence purpose.
-
-Key Behaviors::
-Important methods and the operations they perform.
-
-Dependencies::
-Referenced classes and external services.
-
-Relationships::
-Inheritance, composition, aggregation, interface implementation, event communication.
-
-Lifecycle Role::
-One of: Controller, Service, Repository, Entity, DTO, Configuration, Utility, Factory, Adapter, Event Listener, Other.
-
----
-
-=== Phase 5 — Dependency Analysis
-
-==== Goal
-Catalog and explain all external libraries and frameworks used by the application.
-
-==== Inputs
-* Resolved dependency list from `mvn dependency:list` or `gradle dependencies`.
-* Direct vs. transitive classification.
-* Dependency scopes (`compile`, `runtime`, `test`, `provided`).
-
-==== Processing
-The analyser shall:
-
-. Collect all compile-scoped and runtime-scoped dependencies.
-. Group them by functional category (web framework, persistence, messaging, testing, utilities, etc.).
-. Match each group against a known technology taxonomy.
-. Submit the grouped list to the LLM for purpose inference.
-
-==== Outputs
-
-Dependency Inventory::
-Complete list of direct dependencies with group ID, artifact ID, and version.
-
-Dependency Purpose::
-Short explanation of why each dependency is included.
-
-Usage Areas::
-Where in the codebase each dependency is actively used.
-
-Technology Stack::
-Named technologies identified (e.g., Spring Boot, Hibernate, Kafka, Jackson, AWS SDK).
-
-Critical Dependencies::
-Dependencies whose removal would break core functionality.
-
----
-
-=== Phase 6 — Architecture Analysis
-
-==== Goal
-Identify architectural style, design patterns, and structural quality characteristics.
-
-==== Inputs
-* Outputs from Phases 1–5 (module graph, package roles, class relationships, dependency stack).
-* Annotation patterns (`@RestController`, `@Service`, `@Repository`, `@Entity`, ports/adapters markers, etc.).
-* Package naming conventions.
-
-==== Processing
-The analyser shall:
-
-. Infer the dominant architectural style from layer naming, dependency direction, and framework usage.
-. Detect well-known design patterns by structural signatures.
-. Evaluate dependency direction for layering violations.
-. Submit the synthesised structural model to the LLM for architecture assessment.
-
-==== Outputs
-
-Architecture Overview::
-Narrative description of the high-level structure.
-
-Architectural Style::
-One or more of: Layered Architecture, Hexagonal Architecture, Clean Architecture, Microservices, Modular Monolith, Event-Driven Architecture, Other.
-
-Design Patterns::
-List of identified patterns with the classes where they appear.
-
-Dependency Structure::
-Summary of how dependencies flow between layers and modules.
-
-Architectural Strengths::
-Observed positive patterns (separation of concerns, testability enablers, clear boundaries).
-
-Architectural Risks::
-Potential issues: circular dependencies, God classes, leaking domain logic into the API layer, missing abstraction boundaries.
-
----
-
-=== Phase 7 — Testing Analysis
-
-==== Goal
-Understand how software quality is assured and identify coverage gaps.
-
-==== Inputs
-* All source files under `src/test/java`.
-* Test class annotations (`@Test`, `@SpringBootTest`, `@DataJpaTest`, `@WebMvcTest`, etc.).
-* Test framework dependencies identified in Phase 5.
-* Declared test plugins (`maven-surefire-plugin`, `maven-failsafe-plugin`).
-
-==== Processing
-The analyser shall:
-
-. Classify each test class by category (unit, integration, component, end-to-end, contract).
-. Map tested subjects by matching test class names to production class names.
-. Identify which production classes have no corresponding test class.
-. Submit the test inventory to the LLM for quality assessment.
-
-==== Outputs
-
-Testing Overview::
-Summary of the overall testing approach and philosophy.
-
-Test Categories::
-Counts and representative examples for: Unit Tests, Integration Tests, Component Tests, End-to-End Tests, Contract Tests.
-
-Coverage Analysis::
-Production packages and components with test coverage vs. those without.
-
-Test Targets::
-Which layers are exercised (services, controllers, repositories, domain logic, APIs).
-
-Testing Frameworks::
-Identified tools: JUnit 5, Mockito, Testcontainers, WireMock, AssertJ, REST Assured, Pact, Awaitility.
-
-Quality Assessment::
-Observed strengths and identified gaps with suggested improvement areas.
-
----
-
-=== Phase 8 — External Interaction Analysis
-
-==== Goal
-Document all entry points through which users or external systems communicate with the application.
-
-==== Inputs
-* REST controller classes and their `@RequestMapping` annotations.
-* Message listener classes (Kafka, RabbitMQ, SQS).
-* Scheduled method annotations (`@Scheduled`).
-* Client beans calling external HTTP endpoints or message brokers.
-* OpenAPI / Swagger descriptors if present.
-* Configuration properties naming external service URLs.
-
-==== Processing
-The analyser shall:
-
-. Enumerate all inbound interaction mechanisms.
-. Enumerate all outbound calls to external systems.
-. Reconstruct end-to-end data flows for the most significant business operations.
-. Submit the interaction map to the LLM for narrative synthesis.
-
-==== Outputs
-
-User Interfaces::
-All entry points available to human users or automated callers (REST endpoints, CLI commands, message topics, scheduled triggers).
-
-Public APIs::
-Exposed interfaces: path, HTTP method, request/response shape for REST; topic and schema for messaging.
-
-Consumed APIs::
-External services called by the application: URL pattern, protocol, purpose.
-
-Integration Map::
-Table of connected external systems with their integration mechanism and business function.
-
-Data Flow::
-Narrative and/or diagram describing how information enters, moves through, and leaves the system for the primary use cases.
-
----
+=== Phase 8 — External Interfaces & APIs
+Maps exposed endpoints (REST, gRPC, SOAP) and consumed web services.
 
 === Phase 9 — System Knowledge Graph
-
-==== Goal
-Produce a unified structural model that cross-links all findings from the previous phases.
-
-==== Inputs
-* All phase outputs (1–8).
-
-==== Processing
-The analyser shall assemble:
-
-. A containment hierarchy (Application → Modules → Packages → Classes).
-. A dependency graph linking classes, packages, and modules.
-. An architecture graph showing layer interactions.
-. An external integration graph.
-. A responsibility map assigning each identified responsibility to the component that owns it.
-
-==== Outputs
-
-Hierarchy::
-Nested outline from application level down to class level.
-
-Dependency Graph::
-Machine-readable (JSON or DOT format) representation of inter-component relationships.
-
-Architecture Graph::
-Layered view showing which architectural tiers exist and how they connect.
-
-External Integration Graph::
-Nodes for internal modules and external systems; edges labelled with protocol and direction.
-
-Responsibility Map::
-Table mapping each business or technical responsibility to the owning component.
-
----
+Assembles containment hierarchies, class dependencies, and external mappings.
 
 === Phase 10 — RAG Knowledge Base Indexing
 
 ==== Goal
-Embed and persist every phase result into the PostgreSQL vector store so that all downstream query capabilities can retrieve semantically relevant context without re-running the LLM pipeline.
+Chunk, embed, and store every phase result into PostgreSQL using pgvector, enabling semantic similarity queries.
 
 ==== Inputs
-* All phase results (1–9) from the cache.
-* The system knowledge graph assembled in Phase 9.
+* Phase results (1–9).
+* Knowledge Graph from Phase 9.
 
 ==== Processing
 The indexer shall:
-
-. Chunk each phase result into semantically coherent text segments (configurable chunk size; default 512 tokens with 64-token overlap).
-. Request a vector embedding for each chunk from the configured embedding model.
-. Persist each chunk together with its embedding, phase ID, job ID, and source metadata to the `rag_chunks` table in PostgreSQL (pgvector extension).
-. Build a job-level metadata record in the `analysis_jobs` table marking the job as `INDEXED`.
-. Emit a progress event so the Vaadin UI can notify the user that the knowledge base is ready.
-
-==== Outputs
-
-Indexed Knowledge Base::
-All phase result chunks are stored in PostgreSQL and retrievable by semantic similarity search.
-
-Job Status::
-The analysis job is marked `INDEXED`; the UI exposes the four query modes for this job.
+. Chunk each phase result into semantically coherent text segments (default 512 tokens with 64-token overlap).
+. Request a vector embedding for each chunk from the configured embedding model (e.g., Ollama `nomic-embed-text` or OpenAI `text-embedding-3-small`).
+. Persist each chunk, its embedding vector, phase ID, and job ID to the `rag_chunks` table in PostgreSQL.
+. Mark the analysis job as `INDEXED` in the database.
 
 ---
 
-== Query Capabilities
+== MCP Protocol Interface (The Core API)
 
-Once an analysis job reaches `INDEXED` status, the user can run any of the following query capabilities against the knowledge base of that job.
-Each capability uses retrieval-augmented generation: it first searches the vector store for the top-K most relevant chunks, then submits those chunks together with the user's question to the LLM.
+The primary interface of the Java Project Analyser is the Model Context Protocol (MCP) JSON-RPC 2.0 API. This allows AI systems to interact with the application.
 
-=== Query Capability 1 — Risk Analysis
+=== MCP Tools
 
-==== Goal
-Surface security vulnerabilities, usability weaknesses, and readability issues in the analysed application without requiring the user to know where to look.
+The MCP server registers the following tools for AI clients to call:
 
-==== Inputs
-* Selected job ID.
-* Optional scope filter: `SECURITY`, `USABILITY`, `READABILITY`, or `ALL` (default `ALL`).
-
-==== Processing
-The system shall:
-
-. Formulate a risk-discovery prompt that instructs the LLM to reason over the retrieved knowledge base chunks.
-. Retrieve the top-K chunks most relevant to the chosen risk scope.
-. Submit the retrieved chunks to the LLM with a structured risk-analysis prompt.
-. Parse the structured response into a list of risk findings, each with a category, severity, affected component, and recommendation.
-
-==== Outputs
-
-Risk Report::
-Ordered list of findings grouped by category (Security → Usability → Readability).
-
-Per Finding::
-Category, severity (High / Medium / Low), affected component(s), description, recommendation.
-
-Summary Statistics::
-Count of findings per category and severity level.
-
----
-
-=== Query Capability 2 — System Documentation
-
-==== Goal
-Produce a human-readable, comprehensive documentation document of the analysed system without manual effort.
-
-==== Inputs
-* Selected job ID.
-* Target audience: `DEVELOPER`, `ARCHITECT`, or `MANAGER` (default `DEVELOPER`).
-* Optional custom section list to include or exclude.
-
-==== Processing
-The system shall:
-
-. Retrieve the knowledge base chunks that correspond to each requested documentation section.
-. Submit retrieved context to the LLM with a documentation-composition prompt tailored to the target audience.
-. Assemble the section outputs into a single, navigable AsciiDoc document.
-
-==== Outputs
-
-Documentation Document::
-AsciiDoc file covering: System Overview, Architecture, Module Descriptions, Key Classes and Their Roles, External Integrations, Data Model, Configuration Reference.
-
-Each section is attributed to the phase(s) that provided its source knowledge.
-
----
-
-=== Query Capability 3 — LLM-Assisted Bug Finding
-
-==== Goal
-Allow a user to describe a suspected bug or unexpected behaviour in natural language and let the system locate the most likely responsible code area using the knowledge base.
-
-==== Inputs
-* Selected job ID.
-* Natural-language description of the bug or unexpected behaviour.
-
-==== Processing
-The system shall:
-
-. Embed the user's bug description.
-. Retrieve the top-K knowledge base chunks whose embeddings are most similar to the bug description.
-. Submit the retrieved chunks and the bug description to the LLM with a fault-localisation prompt.
-. Parse the LLM response into a list of suspect components with justifications.
-
-==== Outputs
-
-Bug Localisation Report::
-Ordered list of suspect components (classes, packages, or modules) with:
-- Component name and location.
-- Why the LLM considers it relevant to the described behaviour.
-- Confidence level (High / Medium / Low).
-- Suggested next investigation steps.
-
----
-
-=== Query Capability 4 — LLM-Assisted Feature Implementation Guidance
-
-==== Goal
-Help a developer understand *where* and *how* to implement a new feature by grounding the LLM's suggestions in the actual architecture and conventions of the analysed codebase.
-
-==== Inputs
-* Selected job ID.
-* Natural-language description of the desired new feature.
-* Optional target module or package scope.
-
-==== Processing
-The system shall:
-
-. Embed the feature description.
-. Retrieve the top-K knowledge base chunks relevant to the feature scope (architecture, design patterns, affected modules).
-. Submit the retrieved chunks and the feature description to the LLM with a feature-guidance prompt.
-. Parse the LLM response into a structured implementation plan.
-
-==== Outputs
-
-Feature Implementation Plan::
-Structured guidance including:
-- Recommended entry point(s) (which classes or packages to extend or add).
-- Applicable design patterns from the codebase that should be followed.
-- Integration points with existing modules.
-- Suggested new class names, following the codebase's naming conventions.
-- Potential risks or side-effects identified by the LLM.
-
----
-
-== Final Report
-
-After Phase 9 (before indexing), the tool generates a self-contained AsciiDoc analysis report with the following top-level sections:
-
-[cols="1,3", options="header"]
+[cols="1,2,3", options="header"]
 |===
-| Section | Content
+| Tool Name | Parameters | Description
 
-| Executive Summary
-| Two to five sentence description of the application.
+| `analyse_project`
+| `projectPath` (string), `gitUrl` (string, optional)
+| Triggers the background 10-phase analysis on a local project directory or clones a Git repository. Returns the `jobId`.
 
-| Business Purpose
-| Why the system exists; the business problem it addresses.
+| `get_analysis_status`
+| `jobId` (string)
+| Returns the current pipeline phase, status (PENDING, RUNNING, COMPLETED, INDEXED, FAILED), and progress percentage.
 
-| Functional Overview
-| Major capabilities and feature groups.
+| `search_codebase`
+| `jobId` (string), `query` (string)
+| Runs a similarity search on pgvector using the query embedding. Returns the top-K relevant text chunks and phase metadata.
 
-| Module Analysis
-| Per-module findings from Phase 2.
+| `find_bugs`
+| `jobId` (string), `context` (string)
+| Queries the RAG database to identify code smells, testing gaps, and bugs in the codebase.
 
-| Package Analysis
-| Per-package findings from Phase 3.
+| `get_project_summary`
+| `jobId` (string)
+| Returns the high-level business purpose and functional summary extracted during Phase 1.
 
-| Class Analysis
-| Per-class findings from Phase 4 (high-priority classes first).
-
-| External Dependencies
-| Dependency inventory and technology stack from Phase 5.
-
-| Architecture Assessment
-| Findings from Phase 6.
-
-| Testing Assessment
-| Findings from Phase 7.
-
-| External Interfaces & APIs
-| Findings from Phase 8.
-
-| Dependency Graph
-| Rendered graph from Phase 9.
-
-| Architecture Diagram
-| Layered architecture visualization.
-
-| Risks & Findings
-| Consolidated list of architectural risks, test gaps, and notable observations.
-
-| Recommendations
-| Prioritized list of actionable improvements.
+| `get_ascii_report`
+| `jobId` (string)
+| Retrieves the finished, compiled AsciiDoc report for the codebase.
 |===
 
-NOTE: The Risk Analysis query capability (QC-1) produces a *separate*, more detailed and interactive risk report derived from the RAG knowledge base.
-The Risks & Findings section in the analysis report is a static snapshot; QC-1 allows follow-up queries and custom scope filtering.
+=== MCP Resources
+
+The MCP server exposes static and dynamic resource URIs that AI clients can read:
+
+* `mcp://analysis/jobs` - Returns a JSON array of all analysis jobs, paths, and status values.
+* `mcp://analysis/job/{jobId}/summary` - Exposes the Phase 1 executive summary and purpose.
+* `mcp://analysis/job/{jobId}/structure` - Exposes the project's build and package organization.
+* `mcp://analysis/job/{jobId}/report` - Exposes the raw compiled AsciiDoc report.
+
+=== MCP Prompts
+
+The MCP server registers prompts that assist AI clients in formatting instructions:
+
+* `review-codebase-risks` - Sets up a structured prompt for the AI to query the codebase and compile an architectural risk report.
+* `suggest-feature-impl` - Prepares a structured prompt to guide the AI in designing new features conforming to the codebase's architecture and conventions.
+
+---
+
+== Vaadin MCP Demo Client
+
+The Vaadin web application acts as a browser-based client that demonstrates how an AI system utilizes the MCP server.
+
+* **Mode of Operation**: The Vaadin UI does *not* talk to the database or LLM directly. Instead, it embeds a LangChain4J chat assistant which is configured with an `McpClient` pointing to the Quarkus MCP SSE endpoint (`/mcp/sse`).
+* **Chat Interface**: The user chats with the assistant. If the user asks "What is the purpose of this project?" or "Find any bugs", the LLM client uses tool-calling to execute `get_project_summary` or `search_codebase` against the MCP server, displaying the response in the chat thread.
+* **Pipeline Panel**: A dashboard view that lists active jobs. When the user enters a path and clicks "Analyse", the client calls the `analyse_project` tool on the MCP server and displays live-push progress using Vaadin `@Push` notifications.
 
 ---
 
 == Non-Functional Requirements
 
 === Performance
+* The analysis pipeline shall complete within 12 minutes for a project with up to 500 production classes.
+* Query searches (pgvector similarity search) shall return results in less than 2 seconds.
+* SSE message throughput shall support multiple concurrent AI clients without message drop.
 
-* The analysis pipeline (Phases 1–9) shall complete within 10 minutes for a project with up to 500 production classes.
-* Phase 10 (RAG indexing) shall complete within 2 minutes for the same project size.
-* Each query capability response shall be delivered within 30 seconds end-to-end (retrieval + LLM generation).
-* Phase results shall be streamed to disk incrementally so that a partial failure does not require a full restart.
+=== Protocol Conformance
+* The server shall conform 100% to the Model Context Protocol specification v1.0.0.
+* Tool inputs must have strict JSON Schema schemas, and malformed requests must receive standard JSON-RPC 2.0 error responses.
 
 === Resumability
-
-* The tool shall persist intermediate phase results to a local cache directory and to PostgreSQL.
-* If a run is interrupted during Phases 1–9, it shall resume from the last successfully completed phase.
-* If indexing (Phase 10) is interrupted, it shall resume by re-indexing only the phases not yet committed to the vector store.
-
-=== Accuracy
-
-* Phase prompts shall be structured so that context presented to the LLM never exceeds the model's effective context window.
-* For large codebases, chunking strategies (e.g., per-package or per-module batching) shall be applied automatically.
-* The LLM shall be instructed to report uncertainty explicitly rather than hallucinating details.
-* RAG retrieval similarity threshold is configurable; default is cosine similarity ≥ 0.75.
-
-=== Reproducibility
-
-* The tool shall record the exact prompts and model responses for every LLM call in a structured JSONL log alongside the report.
-* Reports and query results shall include the tool version, model identifier, and timestamp.
-
-=== Extensibility
-
-* The phase pipeline shall be implemented as a sequence of composable steps so that individual phases can be replaced or extended without modifying unrelated code.
-* Each query capability shall be a separate domain service, callable independently, so new capabilities can be added by implementing a single interface.
-
-=== Output Format
-
-* The primary output format for the analysis report is AsciiDoc.
-* The tool shall also support Markdown output via a configurable flag.
-* Machine-readable artifacts (dependency graph, responsibility map) shall be emitted as JSON.
-* Query capability outputs are returned as structured JSON and rendered in the Vaadin UI; they can be exported as AsciiDoc or Markdown on demand.
+* Intermediate phase results shall be cached so that an interrupted analysis resumes exactly where it failed.
 
 ---
 
 == Constraints and Assumptions
 
-* The target language is Java (JVM).
-  Kotlin or Groovy files in the same project may be present but are analysed on a best-effort basis.
-* The tool relies on a configured LLM API (Anthropic Claude by default).
-  Users are responsible for providing a valid API key.
-* Source code is analysed statically; the tool does not compile or execute the project.
-* Dependency resolution (`mvn dependency:list` or `gradle dependencies`) requires a working build environment with internet access or a pre-populated local repository.
-  If resolution fails, the tool falls back to parsing the build descriptor directly.
-* The tool does not modify the analysed project in any way.
-* The RAG knowledge base is scoped per analysis job.
-  Running the analysis again creates a new job and a new isolated knowledge base; old jobs are retained until explicitly deleted.
-
----
-
-== Out of Scope
-
-* Runtime profiling or dynamic analysis.
-* Automated code *generation* or *refactoring* — the tool provides guidance and suggestions; writing or modifying code is always the developer's responsibility.
-* Analysis of non-JVM languages (Python, Go, TypeScript, etc.).
-* Real-time code monitoring or incremental re-analysis on file changes.
+* Stdio transport is meant for single-user local integrations (such as IDE extensions). Only one client can connect via Stdio per process instance.
+* SSE transport supports multi-client scenarios and is exposed over HTTP (port 8080).
+* The pgvector similarity threshold defaults to 0.75 and is configurable via application properties.

@@ -1,0 +1,150 @@
+= System Use Case 003 — MCP Tool Execution
+Johannes Rabauer <rabauer.dev@gmail.com>
+v1.0, 2026-05-27
+
+== Purpose
+Define the process where an AI client requests the list of registered tools and executes one of them (such as triggering an analysis or searching the codebase).
+
+== Actors
+- **External AI Client** (Primary Actor)
+- **MCP Server** (System under test)
+
+== Protocol Interface
+- Handled over established Stdio (SUC-001) or SSE (SUC-002) transport sessions.
+
+== Main Success Scenario: Listing Tools
+
+. The AI Client sends a `tools/list` request:
++
+[source,json]
+----
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "method": "tools/list"
+}
+----
+. The MCP Server responds with its available tools, describing their names, descriptions, and input JSON Schema schemas:
++
+[source,json]
+----
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "tools": [
+      {
+        "name": "analyse_project",
+        "description": "Trigger a 10-phase analysis on a local Java project path or clone a Git repo.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectPath": {
+              "type": "string",
+              "description": "The absolute directory path on the local filesystem."
+            },
+            "gitUrl": {
+              "type": "string",
+              "description": "Optional Git URL to clone."
+            }
+          },
+          "required": ["projectPath"]
+        }
+      },
+      {
+        "name": "search_codebase",
+        "description": "Perform similarity search over the analyzed codebase chunks.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "jobId": {
+              "type": "string",
+              "description": "The unique UUID of the analysis job."
+            },
+            "query": {
+              "type": "string",
+              "description": "The natural language query."
+            }
+          },
+          "required": ["jobId", "query"]
+        }
+      }
+    ]
+  }
+}
+----
+
+== Main Success Scenario: Triggering Analysis
+
+. The AI Client sends a `tools/call` request for `analyse_project`:
++
+[source,json]
+----
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "method": "tools/call",
+  "params": {
+    "name": "analyse_project",
+    "arguments": {
+      "projectPath": "C:/docs/projekte/my-sample-app"
+    }
+  }
+}
+----
+. The MCP Server validates the argument, boots up the background `AnalysisPipelineService` asynchronously, and returns a success response with the new `jobId`:
++
+[source,json]
+----
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Analysis job successfully created. Job ID: f38b971a-6415-46a2-9441-df0715d9a9cb. Current Status: PENDING."
+      }
+    ]
+  }
+}
+----
+
+== Error and Exceptional Conditions
+
+=== EC-1: Missing Required Arguments
+- **Condition**: Client calls `analyse_project` but omits `projectPath`.
+- **Response**: Server responds with JSON-RPC error:
++
+[source,json]
+----
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "error": {
+    "code": -32602,
+    "message": "Invalid params: Missing required field 'projectPath'"
+  }
+}
+----
+
+=== EC-2: Execution Failure
+- **Condition**: Client executes `search_codebase` but the database fails or the jobId does not exist.
+- **Response**: Server responds with tool response marking `isError: true`:
++
+[source,json]
+----
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "result": {
+    "isError": true,
+    "content": [
+      {
+        "type": "text",
+        "text": "Error: Analysis job not found for ID 'f38b971a-6415-46a2-9441-df0715d9a9cb'."
+      }
+    ]
+  }
+}
+----

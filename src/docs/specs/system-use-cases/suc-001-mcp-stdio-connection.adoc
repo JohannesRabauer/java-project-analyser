@@ -1,0 +1,106 @@
+= System Use Case 001 — MCP Stdio Connection
+Johannes Rabauer <rabauer.dev@gmail.com>
+v1.0, 2026-05-27
+
+== Purpose
+Define how local AI clients (such as Cursor, VS Code extension, or Claude Desktop) establish a connection to the Java Project Analyser over Standard Input/Output (Stdio).
+
+== Actors
+- **External AI Client** (Primary Actor)
+- **MCP Server** (System under test)
+
+== Protocol Interface
+- Standard Input (`System.in`) and Standard Output (`System.out`).
+- Protocol format: JSON-RPC 2.0.
+
+== Main Success Scenario
+
+. The AI Client spawns the Quarkus MCP server process:
++
+[source,sh]
+----
+java -jar target/quarkus-app/quarkus-run.jar --mcp-transport=stdio
+----
+. The AI Client sends an `initialize` JSON-RPC request to `System.in`:
++
+[source,json]
+----
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {},
+    "clientInfo": {
+      "name": "ClaudeDesktop",
+      "version": "1.0.0"
+    }
+  }
+}
+----
+. The MCP Server validates the request, sets up its JSON-RPC parser, and responds to `System.out` with its capabilities (Tools, Resources, Prompts):
++
+[source,json]
+----
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {
+      "tools": {},
+      "resources": {},
+      "prompts": {}
+    },
+    "serverInfo": {
+      "name": "java-project-analyser-mcp",
+      "version": "0.1.0"
+    }
+  }
+}
+----
+. The AI Client sends an `notifications/initialized` notification to confirm completion:
++
+[source,json]
+----
+{
+  "jsonrpc": "2.0",
+  "method": "notifications/initialized"
+}
+----
+. The MCP Server transitions its connection state to `ACTIVE` and is now ready to receive tool calls and resource requests.
+
+== Error and Exceptional Conditions
+
+=== EC-1: Unsupported Protocol Version
+- **Condition**: Client requests a protocol version not supported by the server.
+- **Response**: Server responds with a JSON-RPC error:
++
+[source,json]
+----
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32602,
+    "message": "Unsupported protocol version. Supported versions: 2024-11-05"
+  }
+}
+----
+
+=== EC-2: Malformed JSON Payload
+- **Condition**: Client sends a non-parseable JSON string.
+- **Response**: Server sends a standard JSON-RPC parse error:
++
+[source,json]
+----
+{
+  "jsonrpc": "2.0",
+  "id": null,
+  "error": {
+    "code": -32700,
+    "message": "Parse error"
+  }
+}
+----

@@ -39,34 +39,34 @@ Each maps to a named architectural approach in <<Solution Strategy>>.
 | ID | Quality Characteristic | Scenario (short) | Architectural Approach
 
 | QG-1
-| Modifiability
-| A developer switches the LLM provider from OpenAI to local Ollama by changing one configuration property — no code changes.
-| Hexagonal architecture with `LlmPort` and `EmbeddingPort` (ADR-004); LangChain4J multi-provider abstraction (ADR-003)
+| Protocol Conformance
+| Any standard MCP client (e.g., Cursor, Claude Desktop) successfully establishes a handshake, discovers tools, and parses argument schemas.
+| Strict JSON-RPC 2.0 transport adapters (Stdio & SSE) in Quarkus conforming to the MCP 1.0.0 spec; strict Jackson schema schema validation.
 
 | QG-2
-| Deployability
-| A developer who clones the repository can run the full application with `docker compose --profile local up` in under 5 minutes.
-| Docker Compose with named profiles (ADR-005); self-contained Quarkus container image; pgvector bundled in the PostgreSQL image (ADR-008)
+| Modifiability
+| A developer switches the LLM provider from OpenAI to local Ollama by changing one configuration property — no code changes.
+| Hexagonal architecture with `LlmPort` and `EmbeddingPort` (ADR-004); LangChain4J multi-provider abstraction (ADR-003).
 
 | QG-3
-| Functional Correctness
-| For a well-known project (e.g., Spring PetClinic), the report correctly identifies all framework technologies and the architectural style; risk analysis correctly surfaces at least one real security concern.
-| Phase-by-phase LLM prompting; uncertainty markers preserved (BR-009); structured output schema validation; RAG retrieval grounding (ADR-008)
+| Deployability
+| A developer who clones the repository can run the full application with `docker compose --profile local up` in under 5 minutes.
+| Docker Compose with named profiles (ADR-005); self-contained Quarkus container image; pgvector bundled in the PostgreSQL image (ADR-008).
 
 | QG-4
-| Time Behaviour
-| A 500-class project completes all 10 phases (including RAG indexing) and has all query capabilities available within 12 minutes.
-| Chunked batching (BR-005); parallel chunk dispatch; phase result caching (BR-002); batch embedding in Phase 10
+| Functional Correctness
+| For a well-known project (e.g., Spring PetClinic), the report correctly identifies all framework technologies and the architectural style; risk analysis correctly surfaces at least one real security concern.
+| Phase-by-phase LLM prompting; uncertainty markers preserved (BR-009); structured output schema validation; RAG retrieval grounding (ADR-008).
 
 | QG-5
-| Query Relevance
-| A bug-finding query for a real defect in the analysed project returns the responsible class in the top-3 results in ≥ 80 % of test cases.
-| pgvector cosine similarity with configurable threshold (BR-019); BR-022 architectural context injection for feature queries
+| Time Behaviour
+| A 500-class project completes all 10 phases (including RAG indexing) and has all query capabilities available within 12 minutes.
+| Chunked batching (BR-005); parallel chunk dispatch; phase result caching (BR-002); batch embedding in Phase 10.
 
 | QG-6
-| Usability
-| A non-technical project manager can run a risk analysis and export the report in under 3 minutes without reading any documentation.
-| Vaadin query views with guided input; structured, audience-aware output; one-click export (UC-004, UC-005)
+| Query Relevance
+| A bug-finding query for a real defect in the analysed project returns the responsible class in the top-3 results in ≥ 80 % of test cases.
+| pgvector cosine similarity with configurable threshold (BR-019); BR-022 architectural context injection for feature queries.
 |===
 
 == Stakeholders

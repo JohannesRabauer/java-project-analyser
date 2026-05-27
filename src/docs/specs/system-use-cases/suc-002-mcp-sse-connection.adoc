@@ -1,0 +1,86 @@
+= System Use Case 002 — MCP SSE Connection
+Johannes Rabauer <rabauer.dev@gmail.com>
+v1.0, 2026-05-27
+
+== Purpose
+Define how remote AI clients and our Vaadin MCP Client Demo establish an HTTP-based Server-Sent Events (SSE) connection to the Java Project Analyser.
+
+== Actors
+- **External AI Client** (Primary Actor)
+- **MCP Server** (System under test)
+
+== Protocol Interface
+- SSE Stream endpoint: `GET /mcp/sse`
+- Message endpoint: `POST /mcp/message?sessionId={sessionId}`
+- Protocol format: JSON-RPC 2.0.
+
+== Main Success Scenario
+
+. The AI Client makes an HTTP GET request to establish the event stream:
++
+[source,http]
+----
+GET /mcp/sse HTTP/1.1
+Host: localhost:8080
+Accept: text/event-stream
+----
+. The MCP Server accepts the connection, assigns a unique `sessionId` (UUID), and sends an `endpoint` SSE event containing the POST target URL back to the client:
++
+[source,http]
+----
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+
+event: endpoint
+data: http://localhost:8080/mcp/message?sessionId=4e803d27-4cb2-4a0b-9dfd-b4f0ef353982
+----
+. The AI Client keeps the GET event stream open.
+. The AI Client sends the `initialize` request via HTTP POST to the provided message endpoint:
++
+[source,http]
+----
+POST /mcp/message?sessionId=4e803d27-4cb2-4a0b-9dfd-b4f0ef353982 HTTP/1.1
+Content-Type: application/json
+
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {},
+    "clientInfo": {
+      "name": "VaadinMcpClientDemo",
+      "version": "1.0.0"
+    }
+  }
+}
+----
+. The MCP Server processes the initialization, updates the session context, and sends the JSON-RPC response as a standard SSE event back down the open GET stream:
++
+[source,http]
+----
+event: message
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{},"resources":{},"prompts":{}},"serverInfo":{"name":"java-project-analyser-mcp","version":"0.1.0"}}}
+----
+. The AI Client completes the handshake by POSTing the `initialized` notification:
++
+[source,http]
+----
+POST /mcp/message?sessionId=4e803d27-4cb2-4a0b-9dfd-b4f0ef353982 HTTP/1.1
+Content-Type: application/json
+
+{
+  "jsonrpc": "2.0",
+  "method": "notifications/initialized"
+}
+----
+. The session is now active for dynamic JSON-RPC communication.
+
+== Error and Exceptional Conditions
+
+=== EC-1: Missing Session ID on POST
+- **Condition**: Client posts a message to `/mcp/message` without a `sessionId` query parameter or with a nonexistent `sessionId`.
+- **Response**: Server responds with HTTP status `400 Bad Request`.

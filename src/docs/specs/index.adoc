@@ -1,6 +1,6 @@
 = Java Project Analyser — Specification Index
 Johannes Rabauer <rabauer.dev@gmail.com>
-v2.0, 2026-05-26
+v3.0, 2026-05-27
 :doctype: article
 :toc: left
 :toclevels: 3
@@ -15,10 +15,10 @@ The specification covers all user goals, system interfaces, business rules, acce
 
 For the product requirements and problem statement, see link:prd.adoc[prd.adoc].
 
-The system operates in two sequential modes:
+The system operates as an **MCP Server**, supporting two primary interactions:
 
 * **Analyse mode** (UC-001, UC-002, UC-003) — ten-phase LLM pipeline that extracts knowledge from a Java project and indexes it into the RAG knowledge base.
-* **Query mode** (UC-004 through UC-007) — interactive query capabilities backed by semantic retrieval from the indexed knowledge base.
+* **Query mode** (UC-004 through UC-007) — interactive query capabilities backed by semantic retrieval from the indexed knowledge base, exposed as MCP tools.
 
 == Document Map
 
@@ -58,16 +58,16 @@ The system operates in two sequential modes:
 | LLM-assisted implementation planning grounded in the knowledge base
 | Cockburn Fully Dressed
 
-| link:system-use-cases/suc-001-cli-analyse.adoc[SUC-001 CLI analyse Command]
-| `analyse` command: input, validation, output, errors
+| link:system-use-cases/suc-001-mcp-stdio-connection.adoc[SUC-001 MCP Stdio Connection]
+| Connecting local IDE extensions to the MCP server via Standard Input/Output
 | System Use Case
 
-| link:system-use-cases/suc-002-cli-resume.adoc[SUC-002 CLI resume Command]
-| `resume` command: input, validation, output, errors
+| link:system-use-cases/suc-002-mcp-sse-connection.adoc[SUC-002 MCP SSE Connection]
+| Connecting remote clients and the Vaadin UI via Server-Sent Events (HTTP)
 | System Use Case
 
-| link:system-use-cases/suc-003-llm-phase-execution.adoc[SUC-003 LLM Phase Execution]
-| Internal LLM call interface: prompting, retries, caching
+| link:system-use-cases/suc-003-mcp-tool-execution.adoc[SUC-003 MCP Tool Execution]
+| Executing standard tools (analyse_project, search_codebase, get_ascii_report)
 | System Use Case
 
 | link:acceptance-criteria.adoc[Acceptance Criteria]
@@ -89,20 +89,11 @@ The system operates in two sequential modes:
 |===
 | Actor | Description
 
-| Software Architect
-| Reviews an acquired or inherited system before committing to an architectural change; runs risk analysis.
+| External AI Client
+| Primary Client Actor. An AI assistant, autonomous agent, or IDE extension (e.g., Cursor, Claude Desktop) that initiates MCP connections, calls tools, and reads resources.
 
-| Onboarding Developer
-| Gets up to speed on a service they have just joined; uses documentation generation and bug-finding queries.
-
-| Technical Writer
-| Produces documentation for a system they did not build; uses the generated documentation as a first draft.
-
-| Project Manager
-| Understands technical scope before planning a migration or audit; reviews risk analysis results.
-
-| Developer (working on analysed project)
-| Describes a bug or new feature in natural language and receives codebase-grounded guidance.
+| Developer
+| Secondary Actor. Interacts with the AI client (e.g., in a chat panel) or logs into the Vaadin Demo Client, which uses the MCP server.
 
 | LLM API (System Actor)
 | External language model that processes phase prompts and query prompts; returns structured analysis and query results.
@@ -119,36 +110,36 @@ The system operates in two sequential modes:
 
 | UC-001
 | Analyse a Java Project (Phases 1–10)
-| SUC-001, SUC-003
+| SUC-003
 | BR-001 to BR-013, BR-015, BR-016, BR-017, BR-018
 
 | UC-002
 | Resume an Interrupted Analysis
-| SUC-002, SUC-003
+| SUC-003
 | BR-001, BR-002, BR-003, BR-016
 
 | UC-003
 | Configure the Analyser
-| SUC-001, SUC-002, SUC-003
+| SUC-001, SUC-002
 | BR-011, BR-014
 
 | UC-004
 | Analyse Risks
-| —
+| SUC-003
 | BR-017, BR-018, BR-019, BR-020, BR-021
 
 | UC-005
 | Generate System Documentation
-| —
+| SUC-003
 | BR-017, BR-018, BR-021
 
 | UC-006
 | Find Bugs
-| —
+| SUC-003
 | BR-017, BR-018, BR-021
 
 | UC-007
 | Feature Implementation Guidance
-| —
+| SUC-003
 | BR-017, BR-018, BR-021, BR-022
 |===

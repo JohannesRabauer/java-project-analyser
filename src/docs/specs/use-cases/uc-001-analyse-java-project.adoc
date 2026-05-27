@@ -10,7 +10,7 @@
 |===
 | ID | UC-001
 | Level | User Goal
-| Primary Actor | User (Software Architect, Onboarding Developer, Technical Writer, Project Manager)
+| Primary Actor | External AI Client (on behalf of the User)
 | Supporting Actors | LLM API (system actor)
 |===
 
@@ -20,8 +20,11 @@
 |===
 | Stakeholder | Interest
 
+| External AI Client
+| Needs a structured knowledge model of the codebase to help it answer questions and generate correct code edits without hallucination.
+
 | User
-| Receives a complete, accurate knowledge model of an unfamiliar Java project without spending days reading source code.
+| Receives codebase-grounded help from their AI assistant.
 
 | Development team of the analysed project
 | Their codebase is represented correctly; the tool does not modify or expose their code externally.
@@ -38,7 +41,7 @@
 
 == Trigger
 
-The user invokes `java-analyser analyse <project-path-or-url>`.
+The AI Client executes the `analyse_project` tool via MCP.
 
 == Main Success Scenario
 
@@ -47,7 +50,7 @@ The user invokes `java-analyser analyse <project-path-or-url>`.
 | Step | Action
 
 | 1
-| The user provides a project path or repository URL and optional configuration flags.
+| The AI Client provides the local project path (or git repository URL) as parameters to the `analyse_project` tool.
 
 | 2
 | The system validates the input: project exists and is readable, build descriptor (`pom.xml` or `build.gradle`) is present, API key is configured, output and cache directories are writable.

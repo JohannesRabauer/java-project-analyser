@@ -24,7 +24,8 @@ public class McpDemoClientView extends VerticalLayout {
     private final ObjectMapper objectMapper;
     private final VerticalLayout chatArea = new VerticalLayout();
     private final TextField serverBaseUrl = new TextField("MCP Server URL");
-    private final TextField projectPath = new TextField("Project Path");
+    private final TextField gitUrl = new TextField("Git Repository URL");
+    private final TextField projectPath = new TextField("Local Project Path (alternative)");
     private final TextField resourceUriField = new TextField("Resource URI");
     private final TextField queryField = new TextField();
     private UUID currentJobId;
@@ -63,6 +64,8 @@ public class McpDemoClientView extends VerticalLayout {
 
         serverBaseUrl.setValue("http://localhost:8080");
         serverBaseUrl.setWidthFull();
+        gitUrl.setPlaceholder("https://github.com/owner/repo");
+        gitUrl.setWidthFull();
         projectPath.setPlaceholder("/absolute/path/to/project");
         projectPath.setWidthFull();
         resourceUriField.setValue("mcp://analysis/jobs");
@@ -84,6 +87,7 @@ public class McpDemoClientView extends VerticalLayout {
         layout.add(
                 title,
                 serverBaseUrl,
+                gitUrl,
                 projectPath,
                 resourceUriField,
                 listTools,
@@ -171,13 +175,21 @@ public class McpDemoClientView extends VerticalLayout {
     }
 
     private void analyseProject() {
-        String requestedPath = projectPath.getValue().trim();
-        if (requestedPath.isEmpty()) {
-            addAssistantMessage("Enter an absolute project path first.");
+        String gitUrlValue = gitUrl.getValue().trim();
+        String projectPathValue = projectPath.getValue().trim();
+
+        if (gitUrlValue.isEmpty() && projectPathValue.isEmpty()) {
+            addAssistantMessage("Enter either a Git repository URL or an absolute local project path.");
             return;
         }
 
-        ObjectNode arguments = json().put("projectPath", requestedPath);
+        ObjectNode arguments = json();
+        if (!gitUrlValue.isEmpty()) {
+            arguments.put("gitUrl", gitUrlValue);
+        }
+        if (!projectPathValue.isEmpty()) {
+            arguments.put("projectPath", projectPathValue);
+        }
         invokeTool("analyse_project", arguments, true);
     }
 

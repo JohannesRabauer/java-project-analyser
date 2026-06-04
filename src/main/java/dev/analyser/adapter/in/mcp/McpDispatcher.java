@@ -93,14 +93,13 @@ public class McpDispatcher {
         List<McpTool> tools = List.of(
                 new McpTool(
                         "analyse_project",
-                        "Ingests a Java project from the local filesystem or a Git URL and starts the 10-phase analysis and RAG indexing pipeline.",
+                        "Ingests a Java project from the local filesystem or a public Git URL and starts the 10-phase analysis and RAG indexing pipeline. Provide either gitUrl or projectPath.",
                         Map.of(
                                 "type", "object",
                                 "properties", Map.of(
-                                        "projectPath", Map.of("type", "string", "description", "The absolute path of the Java project on the filesystem"),
-                                        "gitUrl", Map.of("type", "string", "description", "Optional Git URL to clone the repository from")
-                                ),
-                                "required", List.of("projectPath")
+                                        "projectPath", Map.of("type", "string", "description", "Absolute path of the Java project on the server filesystem"),
+                                        "gitUrl", Map.of("type", "string", "description", "Public Git repository URL to clone and analyse (https:// or git://)")
+                                )
                         )
                 ),
                 new McpTool(
@@ -190,30 +189,33 @@ public class McpDispatcher {
     }
 
     private McpResponse callAnalyseProject(JsonNode id, JsonNode args) {
-        if (args == null || !args.has("projectPath")) {
-            return McpResponse.success(id, ToolCallResult.error("Missing required parameter: projectPath"));
+        String gitUrl = args != null && args.hasNonNull("gitUrl") ? args.get("gitUrl").asText().trim() : "";
+        String projectPath = args != null && args.hasNonNull("projectPath") ? args.get("projectPath").asText().trim() : "";
+
+        if (gitUrl.isEmpty() && projectPath.isEmpty()) {
+            return McpResponse.success(id, ToolCallResult.error("Provide either 'gitUrl' or 'projectPath'"));
         }
 
-        String projectPath = args.get("projectPath").asText();
-        UUID jobId = UUID.randomUUID();
-        ProjectSource source = selectProjectSource(args, projectPath);
+        ProjectSource source;
+        String description;
+        if (!gitUrl.isEmpty()) {
+            try {
+                source = new GitSource(URI.create(gitUrl));
+            } catch (IllegalArgumentException e) {
+                return McpResponse.success(id, ToolCallResult.error("Invalid Git URL: " + gitUrl));
+            }
+            description = "git repository: " + gitUrl;
+        } else {
+            source = new LocalSource(Path.of(projectPath));
+            description = "path: " + projectPath;
+        }
 
+        UUID jobId = UUID.randomUUID();
         pipelineService.startAnalysis(jobId, source);
 
         return McpResponse.success(id, ToolCallResult.success(
-                String.format("Successfully started analysis for path: %s\nJob ID: %s\nUse the get_analysis_status tool to track progress.", projectPath, jobId)
+                String.format("Successfully started analysis for %s\nJob ID: %s\nUse the get_analysis_status tool to track progress.", description, jobId)
         ));
-    }
-
-    private ProjectSource selectProjectSource(JsonNode args, String projectPath) {
-        if (args.hasNonNull("gitUrl")) {
-            var gitUrl = args.get("gitUrl").asText().trim();
-            if (!gitUrl.isEmpty()) {
-                return new GitSource(URI.create(gitUrl));
-            }
-        }
-
-        return new LocalSource(Path.of(projectPath));
     }
 
     private McpResponse callGetAnalysisStatus(JsonNode id, JsonNode args) {

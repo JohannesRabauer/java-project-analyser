@@ -60,3 +60,5 @@ types.d.ts
 vite.config.ts
 vite.generated.ts
 src/main/frontend/generated/
+/demo-client/src/main/frontend/generated
+/demo-client/src/main/frontend

@@ -17,7 +17,7 @@ final class GitProjectAdapter {
     private final Path checkoutRoot;
 
     GitProjectAdapter(ProjectTreeLoader projectTreeLoader) {
-        this(projectTreeLoader, Path.of("target/project-sources"));
+        this(projectTreeLoader, Path.of(System.getProperty("java.io.tmpdir"), "analyser-checkouts"));
     }
 
     GitProjectAdapter(ProjectTreeLoader projectTreeLoader, Path checkoutRoot) {

@@ -47,18 +47,4 @@ nb-configuration.xml
 # Local scaffold directories
 workspace/
 cache/
-
-# Local scaffold directories
-workspace/
-cache/
-/src/main/frontend/generated
-
-# Generated Vaadin frontend stubs
-package.json
-tsconfig.json
-types.d.ts
-vite.config.ts
-vite.generated.ts
-src/main/frontend/generated/
-/demo-client/src/main/frontend/generated
-/demo-client/src/main/frontend
+analysis-cache/

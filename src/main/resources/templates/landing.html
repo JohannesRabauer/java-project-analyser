@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Java Project Analyser — MCP Server</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #333; }
+        h1 { border-bottom: 2px solid #2563eb; padding-bottom: 0.5rem; }
+        .status { background: #dcfce7; border: 1px solid #86efac; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+        .jobs { margin: 1.5rem 0; }
+        .job { background: #f1f5f9; border-radius: 6px; padding: 0.75rem; margin: 0.5rem 0; }
+        .job-status { font-weight: bold; }
+        .job-status.COMPLETED, .job-status.INDEXED { color: #16a34a; }
+        .job-status.RUNNING { color: #2563eb; }
+        .job-status.FAILED { color: #dc2626; }
+        pre { background: #1e293b; color: #e2e8f0; padding: 1rem; border-radius: 8px; overflow-x: auto; font-size: 0.85rem; }
+        code { background: #e2e8f0; padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.9rem; }
+        h2 { margin-top: 2rem; }
+    </style>
+</head>
+<body>
+    <h1>Java Project Analyser</h1>
+    <div class="status">✅ Server is running</div>
+
+    <h2>Analyzed Projects</h2>
+    <div class="jobs">
+        {#if jobs.isEmpty()}
+        <p>No projects analyzed yet. Connect your AI agent and call <code>analyse_project</code>.</p>
+        {#else}
+        {#for job in jobs}
+        <div class="job">
+            <span class="job-status {job.status}">{job.status}</span> — {job.source} <br>
+            <small>Job: {job.id} | Created: {job.createdAt}</small>
+        </div>
+        {/for}
+        {/if}
+    </div>
+
+    <h2>Connect Your Agent</h2>
+
+    <h3>Claude Code</h3>
+    <p>Add to your <code>mcp.json</code>:</p>
+    <pre>{
+  "mcpServers": {
+    "java-analyser": {
+      "command": "docker",
+      "args": ["exec", "-i", "java-project-analyser-app-1", "java", "-jar", "/app/analyser.jar", "--stdio"]
+    }
+  }
+}</pre>
+
+    <h3>Cursor</h3>
+    <p>Add to <code>.cursor/mcp.json</code>:</p>
+    <pre>{
+  "java-analyser": {
+    "command": "docker",
+    "args": ["exec", "-i", "java-project-analyser-app-1", "java", "-jar", "/app/analyser.jar", "--stdio"]
+  }
+}</pre>
+
+    <h3>SSE Transport</h3>
+    <p>Connect to <code>http://localhost:8080/mcp/sse</code> for HTTP-based MCP transport.</p>
+
+    <h2>Available Tools</h2>
+    <table style="width:100%; border-collapse:collapse;">
+        <tr style="border-bottom:1px solid #e2e8f0; text-align:left;">
+            <th style="padding:0.5rem;">Tool</th><th style="padding:0.5rem;">Type</th><th style="padding:0.5rem;">Description</th>
+        </tr>
+        <tr><td style="padding:0.5rem;"><code>analyse_project</code></td><td>Command</td><td>Start analysis pipeline</td></tr>
+        <tr><td style="padding:0.5rem;"><code>get_analysis_status</code></td><td>Instant</td><td>Pipeline progress</td></tr>
+        <tr><td style="padding:0.5rem;"><code>get_project_summary</code></td><td>Instant</td><td>Executive summary</td></tr>
+        <tr><td style="padding:0.5rem;"><code>get_architecture_overview</code></td><td>Instant</td><td>Architecture patterns & metrics</td></tr>
+        <tr><td style="padding:0.5rem;"><code>get_class_purpose</code></td><td>Instant</td><td>What a class does</td></tr>
+        <tr><td style="padding:0.5rem;"><code>get_module_purpose</code></td><td>Instant</td><td>Module responsibility</td></tr>
+        <tr><td style="padding:0.5rem;"><code>get_related_classes</code></td><td>Instant</td><td>Dependency graph relationships</td></tr>
+        <tr><td style="padding:0.5rem;"><code>get_class_diagram</code></td><td>Instant</td><td>PlantUML diagram</td></tr>
+        <tr><td style="padding:0.5rem;"><code>get_checkstyle_warnings</code></td><td>Instant</td><td>Code quality issues</td></tr>
+        <tr><td style="padding:0.5rem;"><code>search_codebase</code></td><td>Medium</td><td>Semantic search (2-5s)</td></tr>
+        <tr><td style="padding:0.5rem;"><code>get_possible_bugs</code></td><td>Heavy</td><td>LLM bug analysis (10-30s)</td></tr>
+        <tr><td style="padding:0.5rem;"><code>suggest_improvement</code></td><td>Heavy</td><td>Refactoring suggestions (10-30s)</td></tr>
+    </table>
+</body>
+</html>

@@ -8,28 +8,33 @@
 
 | T-001
 | Information Disclosure
-| Source code of the analysed project is transmitted to a cloud LLM provider (OpenAI, Anthropic) without the operator's explicit awareness.
+| Source code of the analysed project is transmitted to a cloud LLM provider (OpenAI) without the operator's explicit awareness.
 | Proprietary or confidential source code inside the mounted workspace.
 
 | T-002
 | Tampering
-| A local attacker modifies cached phase result JSON files to corrupt or falsify the final report.
-| Integrity of the analysis output.
+| A local attacker modifies cached phase result JSON files to corrupt or falsify analysis results.
+| Integrity of the analysis output served via MCP tools.
 
 | T-003
 | Denial of Service
-| Repeated analysis requests exhaust LLM API rate limits, blocking legitimate use.
+| Repeated `analyse_project` calls or on-demand tool calls exhaust LLM API rate limits, blocking legitimate use.
 | Availability of cloud LLM providers.
 
 | T-004
 | Elevation of Privilege
-| A path-traversal or symlink attack in the project file tree causes the application to read files outside `/workspace`.
+| A path-traversal or symlink attack in the project path parameter causes the application to read files outside the workspace.
 | Host filesystem confidentiality.
 
 | T-005
 | Repudiation
-| No record exists of which project was analysed, with which model, or when — making it impossible to audit or reproduce a report.
+| No record exists of which project was analysed, with which model, or when — making it impossible to audit or reproduce results.
 | Audit integrity.
+
+| T-006
+| Spoofing
+| An unauthorized process connects to the SSE endpoint and issues MCP commands (analyse arbitrary paths, exfiltrate results).
+| Confidentiality and integrity of analysis data.
 |===
 
 == 8.2 Security
@@ -39,60 +44,62 @@
 | Threat | Mitigation | Implementation
 
 | T-001
-| The Vaadin UI displays a prominent notice before the first analysis in an `openai` or `anthropic` profile, stating that source code will be sent to a third-party API.
-The user must confirm before the analysis starts.
-| `AnalysisView` consent gate; stored as a session flag.
+| Documentation clearly states that `openai` profile sends source code to third-party APIs. The Thymeleaf landing page shows the active profile prominently.
+| Landing page template; README documentation.
 
 | T-001
 | The `local` Docker Compose profile keeps all data within the Docker network — no external calls for LLM inference.
-| Ollama container has no outbound network access by default.
+| Ollama container; network isolation.
 
 | T-002
-| Cache directory is created with `700` permissions (owner-only).
-Phase result files are written atomically (write to `.tmp`, rename) to prevent partial reads.
+| Cache directory is created with `700` permissions (owner-only). Phase result files are written atomically (write to `.tmp`, rename).
 | `FilesystemCacheAdapter`
 
 | T-003
-| LangChain4J LLM Adapter enforces exponential-backoff retry (BR-016) and a per-job circuit breaker; jobs that hit the breaker report `FAILED` cleanly rather than looping.
-| `LangChain4JLlmAdapter`
+| LLM Adapter enforces exponential-backoff retry (max 3 attempts) and a per-job circuit breaker; on-demand tools have a concurrency limit.
+| `LangChain4J LLM Adapter`
 
 | T-004
-| `FilesystemProjectAdapter` resolves all file paths relative to the workspace root and rejects any path whose canonical form does not start with the workspace root.
-| `FilesystemProjectAdapter.guardPath()`
+| `ProjectTreeLoader` resolves all file paths relative to the workspace root and rejects any path whose canonical form does not start with the root.
+| `ProjectTreeLoader.guardPath()`
 
 | T-005
-| Every LLM call is appended to `llm-calls.jsonl` (BR-007). The generated report header includes tool version, model ID, and analysis timestamps (BR-008).
-| `FilesystemCacheAdapter`, `AsciiDocReportAdapter`
+| Every LLM call is logged with timestamp, model, and token count. Phase results include job ID and completion timestamp.
+| `AnalysisJobRepository`, structured logging.
+
+| T-006
+| SSE endpoint binds to `0.0.0.0:8080` inside Docker only. In production, expose only via Docker port mapping to localhost. Stdio transport is inherently single-client.
+| Docker Compose `ports: "8080:8080"` (localhost binding configurable).
 |===
 
 == 8.3 Test
 
 Testing follows the pyramid.
-Each test references the Use Case ID or Business Rule it exercises.
+Each test references the Use Case or Business Rule it exercises.
 
 [cols="1,2,2,2", options="header"]
 |===
 | Level | Scope | Tools | Trace Target
 
 | Unit
-| Domain model (value objects, state-machine transitions), Phase Executors with a mock `LlmPort`, `PromptTemplateLoader`, `AsciiDocReportAdapter`.
-| JUnit 5, Mockito
-| Phase Use Cases, BR-001, BR-002, BR-009
+| Domain model (value objects, state-machine transitions), JavaParser AST extraction, graph analysis, static analysis rules.
+| JUnit 5, AssertJ
+| Phase outputs, model invariants
 
 | Integration
-| `LangChain4JLlmAdapter` against an embedded Ollama or WireMock stub; `FilesystemProjectAdapter` against a temp directory fixture; `FilesystemCacheAdapter` read/write round-trip.
-| JUnit 5, Testcontainers (Ollama), WireMock
-| SUC-003, BR-004, BR-010, BR-016
+| LangChain4J adapters against WireMock stubs; `RagRepository` against Testcontainers PostgreSQL+pgvector; `ProjectTreeLoader` against temp directory fixtures; `McpDispatcher` request/response.
+| JUnit 5, Testcontainers, WireMock
+| LLM port contract, RAG search, MCP protocol
 
 | Component
-| Full `AnalysisPipeline` with a WireMock LLM stub; verifies phase ordering, cache persistence, and resume behaviour.
+| Full pipeline with WireMock LLM stub; verifies phase ordering, cache persistence, resume behaviour, and RAG indexing end-to-end.
 | JUnit 5, Testcontainers, WireMock
-| UC-001, UC-002, BR-001, BR-002, BR-003
+| UC-001, UC-002 (analyse + resume)
 
 | End-to-End
-| Vaadin UI interaction with the running application; start analysis, observe progress, download report.
-| Playwright or Vaadin TestBench
-| UC-001 MSS, UC-003
+| MCP stdio transport: send JSON-RPC messages, verify tool responses. MCP SSE transport: connect, send, verify SSE events.
+| JUnit 5, HTTP client
+| MCP protocol conformance, tool taxonomy
 |===
 
 == 8.4 Observability
@@ -103,11 +110,12 @@ Quarkus structured logging (JSON output in production).
 Every log entry includes MDC fields `jobId` and `phaseId` when a pipeline operation is active.
 
 Key log events:
-* `AnalysisStarted` — job ID, project source, profile
+
+* `AnalysisStarted` — job ID, project source, model config
 * `PhaseStarted` / `PhaseCompleted` / `PhaseFailed` — phase ID, duration
 * `LlmCallAttempt` — attempt number, model, estimated token count
 * `LlmCallResult` — HTTP status, actual token usage, duration ms
-* `ReportGenerated` — output path, format, duration
+* `McpToolCalled` — tool name, job ID, response time
 
 === Metrics
 
@@ -124,7 +132,10 @@ Quarkus Micrometer exposes metrics at `/q/metrics`.
 | Total LLM call attempts, labelled `success` / `retry` / `failed`.
 
 | `analyser.llm.tokens.prompt` / `.completion` (distribution summary)
-| Token usage per call — informs cost tracking and chunking tuning.
+| Token usage per call — informs cost tracking.
+
+| `analyser.mcp.tool.duration` (timer, tag: `toolName`)
+| Response time per MCP tool invocation.
 
 | `analyser.jobs.active` (gauge)
 | Number of currently running analysis jobs.
@@ -134,9 +145,9 @@ Quarkus Micrometer exposes metrics at `/q/metrics`.
 
 Quarkus health endpoints at `/q/health`:
 
-* `LlmProviderHealthCheck` — verifies the configured LLM provider responds to a lightweight ping.
-* `WorkspaceHealthCheck` — verifies `/workspace` is mounted and readable.
-* `CacheHealthCheck` — verifies the cache directory is writable.
+* `LlmProviderHealthCheck` — verifies the configured LLM provider responds.
+* `DatabaseHealthCheck` — verifies PostgreSQL connectivity.
+* `WorkspaceHealthCheck` — verifies configured workspace paths are readable.
 
 == 8.5 Error Handling
 
@@ -145,26 +156,30 @@ Quarkus health endpoints at `/q/health`:
 | Error Scenario | Handling Strategy | Reference
 
 | Transient LLM API error (HTTP 429, 5xx, timeout)
-| Exponential-backoff retry, max 3 attempts (1s / 2s / 4s). After exhaustion: phase → `FAILED`; job → `FAILED`; cache flushed.
-| BR-016, SUC-003
+| Exponential-backoff retry, max 3 attempts (1s / 2s / 4s). After exhaustion: phase → `FAILED`; job → `FAILED`; cache flushed up to last successful phase.
+| BR-016
 
 | LLM response fails schema validation
-| One clarification retry with a schema-reminder suffix. If retry also fails: phase → `DEGRADED`; raw response cached; pipeline continues.
-| SUC-003, BR-009
+| One clarification retry with a schema-reminder suffix. If retry also fails: log the raw response; phase result stored as `DEGRADED`; pipeline continues.
+| BR-009
 
 | SIGTERM / SIGINT received mid-pipeline
-| Quarkus shutdown hook flushes completed phase results to cache, then exits with code 130. Run is resumable.
-| BR-002, UC-002
+| Quarkus shutdown hook flushes completed phase results to cache. Run is resumable on next start.
+| UC-002
 
-| Workspace path inaccessible at startup
-| Application startup fails fast; `WorkspaceHealthCheck` reports `DOWN`; Quarkus refuses to start.
-| TC-04
+| Project path inaccessible
+| `analyse_project` tool returns a structured MCP error (`isError: true`) with a clear message. Job is not created.
+| T-004
 
 | LLM provider unreachable at startup
-| `LlmProviderHealthCheck` reports `DOWN`; liveness probe fails; Docker Compose restart policy triggers.
-| TC-03
+| `LlmProviderHealthCheck` reports `DOWN`; health endpoint fails; Docker restart policy triggers.
+| Health check
 
-| Git clone failure
-| `GitProjectAdapter` propagates the `git` exit code and stderr as a user-visible error in the Vaadin UI; job does not start.
-| BR-015
+| MCP tool called before analysis complete
+| Tool returns structured error: "Analysis in progress. Phase N of 8 completed. Retry after completion."
+| Cold start behaviour (PRD)
+
+| On-demand tool LLM call times out
+| 30-second timeout per on-demand call. Returns error to the MCP client with an explanation. Does not affect other concurrent requests.
+| NFR: Time Behaviour
 |===

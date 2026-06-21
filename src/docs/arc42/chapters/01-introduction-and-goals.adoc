@@ -2,37 +2,32 @@
 
 == Requirements Overview
 
-The Java Project Analyser ingests a Java codebase, drives a ten-phase LLM analysis pipeline, and persists the results as a RAG (Retrieval-Augmented Generation) knowledge base in PostgreSQL.
+The Java Project Analyser is a headless MCP server that deeply understands Java projects.
+A developer starts it via Docker Compose, points an MCP-capable AI agent (Claude Code, Cursor, VS Code Copilot) at it, and queries rich structural and semantic knowledge about the codebase — class relationships, architecture patterns, potential bugs, and more.
 
-The system has two operating modes:
+The system combines deterministic AST parsing (JavaParser) with LLM-powered semantic analysis across an eight-phase pipeline.
+Results are stored as a searchable knowledge graph and RAG embeddings in PostgreSQL (pgvector).
+External AI agents retrieve pre-computed facts instantly or trigger on-demand LLM reasoning (10–30 s) — all via MCP JSON-RPC 2.0 over stdio or SSE transport.
 
-**Analyse mode** — Phases 1–9 extract and synthesise knowledge from the source code.
-Phase 10 chunks every phase result, embeds each chunk, and stores it in the vector store.
-Inputs arrive through a Docker volume mount (read-only) or by cloning a Git repository at analysis time.
-A Vaadin browser UI drives the analysis and displays the static analysis report.
+There is no browser UI for driving the analysis.
+The MCP tool `analyse_project` triggers the pipeline; all interaction happens through the MCP protocol.
+A minimal Thymeleaf landing page at `localhost:8080` shows server health and copy-pasteable agent configuration snippets.
 
-**Query mode** — Once a job is `INDEXED`, the Vaadin UI exposes four interactive query capabilities that use retrieval-augmented generation against the stored knowledge base:
-
-* Risk Analysis (security, usability, readability)
-* Documentation Generation (audience-tailored)
-* LLM-Assisted Bug Finding
-* LLM-Assisted Feature Implementation Guidance
-
-Full requirements: link:../../specs/index.adoc[Specification Index] and link:../../specs/prd.adoc[PRD].
+Full requirements: link:../../specs/prd.adoc[PRD].
 
 Key use cases:
-* link:../../specs/use-cases/uc-001-analyse-java-project.adoc[UC-001] — Analyse a Java Project (includes RAG indexing — Phase 10)
+
+* link:../../specs/use-cases/uc-001-analyse-java-project.adoc[UC-001] — Analyse a Java Project (triggers eight-phase pipeline including RAG indexing)
 * link:../../specs/use-cases/uc-002-resume-analysis.adoc[UC-002] — Resume an Interrupted Analysis
-* link:../../specs/use-cases/uc-003-configure-analyser.adoc[UC-003] — Configure the Analyser
+* link:../../specs/use-cases/uc-003-configure-analyser.adoc[UC-003] — Configure the Analyser (model provider, embedding model)
 * link:../../specs/use-cases/uc-004-risk-analysis.adoc[UC-004] — Analyse Risks of an Analysed Application
-* link:../../specs/use-cases/uc-005-generate-documentation.adoc[UC-005] — Generate System Documentation
 * link:../../specs/use-cases/uc-006-find-bugs.adoc[UC-006] — Find Bugs Using the RAG Knowledge Base
 * link:../../specs/use-cases/uc-007-feature-assistance.adoc[UC-007] — LLM-Assisted Feature Implementation Guidance
 
 == Quality Goals
 
-Top quality goals, in priority order.
-Each maps to a named architectural approach in <<Solution Strategy>>.
+The top five quality goals that drive architectural decisions, in priority order.
+Each maps to a named approach in <<Solution Strategy>> (Chapter 4).
 
 [cols="1,2,3,2", options="header"]
 |===
@@ -40,33 +35,28 @@ Each maps to a named architectural approach in <<Solution Strategy>>.
 
 | QG-1
 | Protocol Conformance
-| Any standard MCP client (e.g., Cursor, Claude Desktop) successfully establishes a handshake, discovers tools, and parses argument schemas.
-| Strict JSON-RPC 2.0 transport adapters (Stdio & SSE) in Quarkus conforming to the MCP 1.0.0 spec; strict Jackson schema schema validation.
+| Any standard MCP client (Claude Code, Cursor) establishes a JSON-RPC 2.0 handshake, discovers tools via `tools/list`, and invokes them with validated argument schemas — conforming to MCP specification 2024-11-05.
+| Strict JSON-RPC 2.0 transport adapters (stdio & SSE) in Quarkus; Jackson schema validation on tool inputs; standard error codes on malformed requests.
 
 | QG-2
 | Modifiability
-| A developer switches the LLM provider from OpenAI to local Ollama by changing one configuration property — no code changes.
-| Hexagonal architecture with `LlmPort` and `EmbeddingPort` (ADR-004); LangChain4J multi-provider abstraction (ADR-003).
+| A developer switches the LLM provider from OpenAI to local Ollama by changing one configuration property (`analyser.pipeline.model-provider`) — no code changes, no recompilation.
+| Hexagonal architecture with `LlmPort` and `EmbeddingPort`; LangChain4J multi-provider abstraction; three independent model slots (pipeline, query, embedding).
 
 | QG-3
 | Deployability
-| A developer who clones the repository can run the full application with `docker compose --profile local up` in under 5 minutes.
-| Docker Compose with named profiles (ADR-005); self-contained Quarkus container image; pgvector bundled in the PostgreSQL image (ADR-008).
+| A developer who clones the repository runs `docker compose --profile local up` and has the full system (PostgreSQL + pgvector, Ollama, analyser) operational in under 5 minutes.
+| Docker Compose with named profiles; self-contained Quarkus container image; pgvector bundled in the PostgreSQL image; no manual database migrations required.
 
 | QG-4
-| Functional Correctness
-| For a well-known project (e.g., Spring PetClinic), the report correctly identifies all framework technologies and the architectural style; risk analysis correctly surfaces at least one real security concern.
-| Phase-by-phase LLM prompting; uncertainty markers preserved (BR-009); structured output schema validation; RAG retrieval grounding (ADR-008).
+| Analysis Accuracy
+| For a well-known project (e.g., Spring PetClinic), the analyser correctly identifies all framework technologies, the architectural style, and surfaces at least one real code quality concern.
+| JavaParser AST extraction (deterministic structural facts); phase-by-phase LLM prompting with structured output schemas; RAG retrieval grounding for on-demand queries.
 
 | QG-5
 | Time Behaviour
-| A 500-class project completes all 10 phases (including RAG indexing) and has all query capabilities available within 12 minutes.
-| Chunked batching (BR-005); parallel chunk dispatch; phase result caching (BR-002); batch embedding in Phase 10.
-
-| QG-6
-| Query Relevance
-| A bug-finding query for a real defect in the analysed project returns the responsible class in the top-3 results in ≥ 80 % of test cases.
-| pgvector cosine similarity with configurable threshold (BR-019); BR-022 architectural context injection for feature queries.
+| A project with 300 production classes completes the full eight-phase pipeline (including RAG indexing) within 15 minutes using a local Ollama model.
+| Chunked batching; parallel LLM dispatch; phase result caching (interrupted analysis resumes from last completed phase); batch embedding.
 |===
 
 == Stakeholders
@@ -75,15 +65,11 @@ Each maps to a named architectural approach in <<Solution Strategy>>.
 |===
 | Role | Name / Group | Expectation
 
-| Primary user
-| Software Architect, Onboarding Developer, Technical Writer, Project Manager, Developer
-| Fast, accurate knowledge model; low setup friction; query capabilities that answer real questions about the codebase.
+| Developer (primary user)
+| Any developer using an MCP-capable AI agent (Claude Code, Cursor, VS Code Copilot)
+| Deep, accurate codebase knowledge accessible through their AI agent; instant responses for pre-computed facts; low setup friction (`docker compose up`).
 
 | Developer (of this tool)
 | Johannes Rabauer
-| Clean, extensible codebase; easy to add a new LLM provider, a new analysis phase, or a new query capability.
-
-| LLM API Provider
-| Anthropic, OpenAI, Ollama community
-| API called within rate limits; prompt and embedding calls compatible with current API versions.
+| Clean, extensible codebase; easy to add a new LLM provider, a new analysis phase, or a new MCP tool; testable in isolation.
 |===

@@ -2,15 +2,17 @@
 
 == Business Context
 
-The Java Project Analyser is a headless, multi-transport Model Context Protocol (MCP) server. It sits between external AI systems (such as Cursor, VS Code, or Claude Desktop) and the LLMs/database that execute analysis and search capabilities.
-It abstracts away prompt engineering, parsing, caching, vector indexing, and report rendering behind a standard protocol interface.
+The Java Project Analyser is a headless Model Context Protocol (MCP) server.
+It sits between MCP-capable AI agents and the LLMs and database that execute analysis and search.
+The server abstracts prompt engineering, AST parsing, vector indexing, and semantic retrieval behind a standard MCP tool interface.
 
 The system supports two operating modes:
 
-. **Analyse** — a ten-phase pipeline extracts knowledge from a Java codebase (from filesystem or Git) and indexes it into the PostgreSQL RAG database.
-. **Query** — the client AI asks questions or executes semantic retrieval over codebase chunks via the standard MCP tool and resource endpoints.
+. **Analyse** — a multi-phase pipeline extracts structural and semantic knowledge from a Java codebase (mounted volume or Git clone) and indexes it into PostgreSQL with pgvector.
+. **Query** — the client agent invokes MCP tools for pre-computed facts (instant) or on-demand LLM reasoning (10–30 s) over the indexed knowledge graph.
 
-A separate **Vaadin MCP Client Demo** connects to the server as an external client, demonstrating how an LLM utilizes the MCP server tools to interact with a human.
+There is no browser UI.
+All interaction happens through MCP clients (Claude Code, Cursor, VS Code Copilot) over stdio or SSE transport.
 
 == System Context Diagram
 
@@ -20,32 +22,31 @@ A separate **Vaadin MCP Client Demo** connects to the server as an external clie
 !include <C4/C4_Context>
 LAYOUT_WITH_LEGEND()
 
-title System Context — Java Project Analyser (MCP Server)
+title System Context — Java Project Analyser
 
-Person(user, "Developer / Analyst", "Uses an IDE or the Vaadin Web App to interact with an AI assistant")
+Person(dev, "Developer", "Uses an MCP-capable AI agent\nto analyse and query Java projects")
 
-System_Ext(ai_client, "External AI Assistant", "Cursor, Claude Desktop, Claude Code, or IDE extensions communicating via MCP")
+System(mcp_server, "Java Project Analyser\n(MCP Server)", "Quarkus-based headless server.\nDrives analysis pipeline,\nindexes codebase into pgvector,\nexposes MCP tools and resources.")
 
-System(mcp_server, "Java Project Analyser (MCP Server)", "Quarkus-based headless MCP Server.\nDrives the analysis pipeline,\nindexes codebase to pgvector RAG database,\nand exposes tools, resources, and prompts.")
+System_Ext(claude_code, "Claude Code", "MCP client connecting via stdio")
+System_Ext(cursor, "Cursor / VS Code Copilot", "MCP client connecting via SSE")
 
-System(vaadin_client, "Vaadin MCP Demo Client", "Decoupled web chat application.\nConnects to MCP Server via SSE to showcase capabilities.")
+SystemDb(postgres, "PostgreSQL + pgvector", "Stores analysis results,\nRAG chunks with embeddings")
 
-SystemDb(postgres, "PostgreSQL + pgvector", "Stores analysis jobs, phase results,\nRAG chunks with embeddings.")
-
-System_Ext(ollama, "Ollama", "Local LLM server (local profile only)")
-System_Ext(openai, "OpenAI API", "Cloud LLM + embeddings (openai profile)")
-System_Ext(anthropic, "Anthropic API", "Cloud LLM service (anthropic profile)")
+System_Ext(ollama, "Ollama", "Local LLM inference server")
+System_Ext(openai, "OpenAI API", "Cloud LLM and embedding service")
 System_Ext(git, "Git Repository", "Remote source repository")
+System_Ext(volume, "Source Project Volume", "Local Java codebase\n(read-only mount)")
 
-Rel(user, ai_client, "Instructs / chats with")
-Rel(user, vaadin_client, "Chats in browser", "HTTPS")
-Rel(vaadin_client, mcp_server, "Calls tools & reads resources", "HTTP / SSE")
-Rel(ai_client, mcp_server, "Exchanges JSON-RPC 2.0 messages", "Stdio / SSE")
-Rel(mcp_server, postgres,   "Persists jobs, RAG chunks", "JDBC")
-Rel(mcp_server, ollama,    "Prompts + embeddings", "HTTP :11434")
-Rel(mcp_server, openai,    "Prompts + embeddings", "HTTPS")
-Rel(mcp_server, anthropic, "Prompts", "HTTPS")
-Rel(mcp_server, git, "Clones repository (on demand)", "Git")
+Rel(dev, claude_code, "Instructs")
+Rel(dev, cursor, "Instructs")
+Rel(claude_code, mcp_server, "JSON-RPC 2.0", "Stdio")
+Rel(cursor, mcp_server, "JSON-RPC 2.0", "SSE / HTTP")
+Rel(mcp_server, postgres, "Persists analysis + embeddings", "JDBC")
+Rel(mcp_server, ollama, "Prompts + embeddings", "HTTP")
+Rel(mcp_server, openai, "Prompts + embeddings", "HTTPS")
+Rel(mcp_server, git, "Clones on demand", "Git")
+Rel(mcp_server, volume, "Reads source files", "POSIX FS")
 @enduml
 ....
 
@@ -55,36 +56,35 @@ Rel(mcp_server, git, "Clones repository (on demand)", "Git")
 |===
 | System | Direction | Responsibility
 
+| MCP Clients (Claude Code, Cursor)
+| Inbound
+| AI agents that invoke MCP tools to trigger analysis and query results.
+Connect via stdio (JSON-RPC 2.0) or SSE (HTTP streaming).
+
 | PostgreSQL + pgvector
 | Internal (owned by this deployment)
 | Primary database.
-Stores analysis job metadata, LLM call logs, phase results, RAG chunks with vector embeddings, and query results.
-The pgvector extension enables cosine similarity search over stored embeddings (ADR-008).
+Stores analysis job metadata, phase results, RAG chunks with vector embeddings, and query results.
+The pgvector extension enables cosine similarity search over stored embeddings.
 
 | Ollama
 | Outbound (local profile)
-| Runs open-weight LLMs (Llama 3, Mistral, nomic-embed-text, etc.) on the host machine.
-Receives phase prompts and embedding requests; returns structured text and float vectors.
+| Runs open-weight LLMs (Llama 3, nomic-embed-text, etc.) on the host machine.
+Receives prompts and embedding requests; returns structured text and float vectors.
 
 | OpenAI API
 | Outbound (openai profile)
 | Hosted GPT-4o / text-embedding-3-small or equivalent.
-Receives phase prompts and embedding requests; returns structured text and float vectors.
-
-| Anthropic API
-| Outbound (anthropic profile)
-| Hosted Claude 3.5 Sonnet or equivalent.
-Receives phase prompts; returns structured text.
-NOTE: Anthropic does not yet provide a general embedding endpoint; for this profile the system uses Ollama (locally) or a configurable secondary embedding provider for Phase 10.
+Receives prompts and embedding requests; returns structured text and float vectors.
 
 | Git Repository
 | Outbound (optional)
 | Remote source repository.
 Cloned to a temporary directory when the user provides a URL instead of a pre-mounted volume.
 
-| Source Project (Docker Volume)
+| Source Project Volume
 | Inbound (read-only)
-| The Java codebase being analysed.
+| The Java codebase under analysis.
 Mounted at `/workspace` inside the application container.
 |===
 
@@ -94,31 +94,34 @@ Mounted at `/workspace` inside the application container.
 |===
 | Channel | Protocol | Notes
 
-| Browser ↔ Application
+| MCP Client ↔ Server (stdio)
+| JSON-RPC 2.0 over stdin/stdout
+| Primary transport for Claude Code.
+Agent launches the server process directly; messages are newline-delimited JSON.
+
+| MCP Client ↔ Server (SSE)
 | HTTP on port 8080
-| Vaadin Flow uses WebSocket for server-push progress updates during both the analysis pipeline and RAG indexing.
+| Secondary transport for Cursor and other HTTP-based clients.
+Server-Sent Events stream for server-to-client notifications; HTTP POST for client-to-server requests.
 
-| Application → PostgreSQL
+| Server → PostgreSQL
 | JDBC (port 5432)
-| All persistent state: jobs, phase results, RAG chunks, query results. pgvector `<=>` operator for similarity queries.
+| All persistent state: jobs, phase results, RAG chunks, query results.
+pgvector `<=>` operator for cosine similarity queries.
 
-| Application → Ollama (LLM)
+| Server → Ollama
 | HTTP on port 11434
-| REST API of the Ollama server for chat and embedding calls.
+| REST API for chat completions and embedding generation.
 
-| Application → OpenAI
+| Server → OpenAI
 | HTTPS on port 443
 | OpenAI Chat Completions API and Embeddings API.
 
-| Application → Anthropic
-| HTTPS on port 443
-| Anthropic Messages API.
-
-| Application → Git
+| Server → Git Repository
 | Git over HTTPS or SSH
 | Delegated to `git clone`; credentials from the host environment.
 
-| Application → Workspace volume
+| Server → Source Project Volume
 | POSIX filesystem
-| Read-only bind mount; no writes to the analysed project (BR-006).
+| Read-only bind mount; no writes to the analysed project.
 |===

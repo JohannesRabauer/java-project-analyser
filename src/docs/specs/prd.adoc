@@ -1,6 +1,6 @@
 = Java Project Analyser — Product Requirements Document
 Johannes Rabauer <rabauer.dev@gmail.com>
-v3.0, 2026-05-27
+v4.0, 2026-06-21
 :doctype: article
 :toc: left
 :toclevels: 3
@@ -14,14 +14,16 @@ v3.0, 2026-05-27
 
 === Purpose
 
-The Java Project Analyser is an AI-assisted Model Context Protocol (MCP) server that ingests a Java codebase, drives a ten-phase LLM analysis pipeline, and persists that model as a RAG (Retrieval-Augmented Generation) knowledge base.
-The system is built as an AI-first tool: its primary interfaces are MCP tools, resources, and prompts, enabling any MCP-compliant AI system (e.g., Cursor, Claude Desktop, Claude Code) to analyze codebases and leverage the RAG database to assist with developer queries.
+The Java Project Analyser is a local MCP server that deeply understands Java projects.
+A developer starts it via Docker Compose, points it at a project, and any MCP-capable agent (Claude Code, Cursor, VS Code Copilot) can then query rich structural and semantic knowledge about that codebase — without reading every file itself.
 
 === Problem Statement
 
-Understanding and working within unfamiliar Java codebases is a massive cognitive tax for both human developers and AI coding assistants.
-While standard AI assistants have limited context windows and cannot easily navigate complex structural patterns, this system automates deep structural analysis through a background pipeline and indexes the resulting knowledge model into a PostgreSQL database.
-By exposing this indexed model over the Model Context Protocol, external AI systems can instantly retrieve exact code contexts, module hierarchies, test coverage assessments, and api endpoints without consuming massive prompt tokens or hallucinating details.
+AI coding assistants have limited context windows and cannot easily navigate complex Java codebases.
+They re-read files on every question, miss architectural patterns, and hallucinate structural details.
+
+This server solves the problem by performing a deep, one-time analysis of a Java project — combining AST parsing (JavaParser), static analysis, and LLM-powered assessment — then exposing the results as a queryable MCP interface.
+External AI agents retrieve exact code contexts, class relationships, architecture overviews, and quality assessments without consuming massive prompt tokens.
 
 === Target Users
 
@@ -29,192 +31,372 @@ By exposing this indexed model over the Model Context Protocol, external AI syst
 |===
 | User Group | Context
 
-| External AI Systems
-| LLM-based autonomous coding agents, editors (e.g., Cursor, VS Code with Copilot, Claude Desktop) that need structured, low-latency, deep context about a Java project's architecture, dependencies, and risks.
+| Developers with AI agents
+| The primary user. A developer working in Claude Code, Cursor, or any MCP-capable IDE. They start the analyser, connect their agent, and ask questions about architecture, bugs, class purpose, or dependencies.
 
-| Software Architects (via AI)
-| Auditing an unfamiliar system for compliance, security, or readability by instructing their AI agent to run codebase queries.
+| Software Architects
+| Auditing unfamiliar systems by instructing their AI agent to query the MCP server for structural assessments and risk areas.
 
-| Onboarding Developers (via AI)
-| Navigating a newly assigned service, asking their IDE agent to locate feature implementation points or explain module hierarchies using the MCP tools.
-
-| Technical Writers
-| Creating architecture documentation by prompting their AI assistant to fetch structured phase reports from the MCP server's resources.
+| Onboarding Developers
+| Navigating a newly assigned service. Their agent queries class purposes, related classes, and module boundaries from the MCP server.
 |===
 
 === System Classification
 
-The Java Project Analyser is a **headless, multi-transport Model Context Protocol (MCP) Server** backed by a persistent RAG database (PostgreSQL + pgvector).
-It supports:
-- **Stdio Transport**: JSON-RPC over Standard Input/Output for local IDE extensions (Cursor, VS Code) and command-line AI tools.
-- **SSE (Server-Sent Events) Transport**: HTTP-based JSON-RPC for remote clients and web interfaces.
+The Java Project Analyser is a **headless, multi-transport Model Context Protocol (MCP) Server** backed by PostgreSQL + pgvector.
 
-A completely separate and decoupled part of the application is the **Vaadin MCP Client Demo**.
-This is a standard browser-based chat application that connects to the MCP server over SSE. It uses LangChain4J's MCP client integration to let a human chat with an LLM, which dynamically uses the MCP server's tools to fetch codebase context.
+It supports:
+
+- **Stdio Transport** (primary): JSON-RPC over Standard Input/Output. Claude Code and Cursor launch the server process directly and communicate via stdin/stdout.
+- **SSE Transport** (secondary): HTTP-based JSON-RPC for remote clients and browser-based scenarios.
+
+A Thymeleaf landing page at `localhost:8080` shows server status, analyzed projects, and copy-pasteable MCP configuration snippets for common agents.
 
 ---
 
 == Analysis Pipeline
 
-The analysis pipeline consists of ten sequential phases.
-The pipeline can be triggered on any project path in the filesystem or a git repository URL via the MCP tool interface.
-Phases 1–9 extract and synthesise knowledge from the source code.
-Phase 10 embeds and persists every phase result into the PostgreSQL-backed RAG knowledge base.
+The analysis pipeline runs when a developer triggers `analyse_project` via MCP.
+It combines deterministic AST parsing with LLM-powered semantic analysis.
+Results are stored as both structured data (graph) and embedded vectors (RAG).
 
-=== Phase 1 — Application Purpose Analysis
+The pipeline can analyze multiple projects concurrently (each identified by a job ID).
+
+=== Phase 1 — AST Parsing & Graph Construction
 
 ==== Goal
-Establish the high-level reason for the application's existence before examining any implementation detail.
-
-==== Inputs
-* Project root directory or repository URL.
-* Build descriptor files (`pom.xml`, `build.gradle`, `settings.gradle`).
-* Top-level `README` files.
+Parse all Java files into ASTs and build a structural knowledge graph.
 
 ==== Processing
-The analyser shall:
-. Extract project coordinates, description fields, and declared plugins from the build descriptor.
-. Locate and read any `README.md` / `README.adoc` file.
-. Identify the application's main entry point class.
-. Submit the collected context to the LLM with a prompt focused on business purpose, not implementation.
+. Parse every `.java` file using JavaParser.
+. Extract: classes, interfaces, records, enums, methods, fields, annotations.
+. Build a graph of relationships: inheritance, implementation, composition, dependency (imports), method calls.
+. Extract package hierarchy and module structure (multi-module Maven/Gradle).
 
 ==== Outputs
-Executive Summary::
-One- to three-sentence description of what the application does.
-Business Purpose::
-Why the system exists; the business problem it solves.
-Main Functionalities::
-Bullet list of major capabilities.
-System Classification::
-One of: Web Application, Backend Service, Batch Processor, Integration Platform, Library / Framework, Desktop Application, Mobile Backend, Other.
+- Class graph with relationships (depends-on, extends, implements, contains)
+- Package hierarchy
+- Module boundaries (from build descriptors)
+- Method signatures and annotations (REST endpoints, DI annotations, etc.)
 
 ---
 
-=== Phase 2 — Module Analysis
-Examines multi-module structures, build projects, and core boundaries.
-
-=== Phase 3 — Package Analysis
-Maps package hierarchies, namespaces, and cohesion metrics.
-
-=== Phase 4 — Class Analysis
-Analyzes key classes, high-priority models, and interfaces.
-
-=== Phase 5 — Dependencies & Technology Stack
-Discovers imported libraries, frameworks, database drivers, and runtime requirements.
-
-=== Phase 6 — Architectural Patterns & Styles
-Identifies structural styles (e.g., Hexagonal, MVC, Layered, Event-Driven) and design pattern compliance.
-
-=== Phase 7 — Test Suite & Coverage Assessment
-Analyzes testing types (Unit, Integration, E2E), libraries, and code coverage gaps.
-
-=== Phase 8 — External Interfaces & APIs
-Maps exposed endpoints (REST, gRPC, SOAP) and consumed web services.
-
-=== Phase 9 — System Knowledge Graph
-Assembles containment hierarchies, class dependencies, and external mappings.
-
-=== Phase 10 — RAG Knowledge Base Indexing
+=== Phase 2 — Dependency & Technology Extraction
 
 ==== Goal
-Chunk, embed, and store every phase result into PostgreSQL using pgvector, enabling semantic similarity queries.
-
-==== Inputs
-* Phase results (1–9).
-* Knowledge Graph from Phase 9.
+Identify the technology stack, external dependencies, and build structure.
 
 ==== Processing
-The indexer shall:
-. Chunk each phase result into semantically coherent text segments (default 512 tokens with 64-token overlap).
-. Request a vector embedding for each chunk from the configured embedding model (e.g., Ollama `nomic-embed-text` or OpenAI `text-embedding-3-small`).
-. Persist each chunk, its embedding vector, phase ID, and job ID to the `rag_chunks` table in PostgreSQL.
-. Mark the analysis job as `INDEXED` in the database.
+. Parse `pom.xml` / `build.gradle` for declared dependencies.
+. Detect frameworks from annotations and imports (Spring, Quarkus, Jakarta EE, etc.).
+. Map exposed endpoints (JAX-RS, Spring MVC, gRPC service definitions).
+. Identify database drivers, messaging systems, external service clients.
+
+==== Outputs
+- Technology stack inventory
+- REST/gRPC endpoint map with HTTP methods, paths, and controller classes
+- External dependency list with versions
+- Build module structure
 
 ---
 
-== MCP Protocol Interface (The Core API)
+=== Phase 3 — Graph Analysis & Metrics
 
-The primary interface of the Java Project Analyser is the Model Context Protocol (MCP) JSON-RPC 2.0 API. This allows AI systems to interact with the application.
+==== Goal
+Compute structural quality metrics from the graph.
 
-=== MCP Tools
+==== Processing
+. Calculate package cohesion and coupling.
+. Detect circular dependencies.
+. Measure class complexity (method count, LOC, fan-in/fan-out).
+. Identify architectural layers and dependency direction violations.
 
-The MCP server registers the following tools for AI clients to call:
+==== Outputs
+- Cohesion/coupling scores per package
+- Circular dependency chains
+- Complexity hotspots
+- Layer violation report
+
+---
+
+=== Phase 4 — LLM: Project & Module Summaries
+
+==== Goal
+Generate human-readable summaries of the project and its modules using LLM reasoning.
+
+==== Processing
+. Submit project README, build descriptor, and top-level class names to the LLM.
+. For each module/package: submit the class names, key interfaces, and structural role to the LLM.
+. Generate executive summary, business purpose, and system classification.
+
+==== Outputs
+- Executive summary (1-3 sentences)
+- Business purpose
+- System classification (Web App, Backend Service, Library, etc.)
+- Per-module purpose summaries
+
+---
+
+=== Phase 5 — LLM: Class Purpose Summaries
+
+==== Goal
+Generate a purpose description for each significant class.
+
+==== Processing
+. For each class with >10 LOC: submit the class source, its relationships, and package context to the LLM.
+. Generate a one-paragraph purpose description.
+. Batch classes to minimize LLM round-trips.
+
+==== Outputs
+- Per-class purpose summaries stored in the knowledge graph
+
+---
+
+=== Phase 6 — Static Analysis
+
+==== Goal
+Detect code quality issues deterministically (no LLM needed).
+
+==== Processing
+. Run pattern-based checks on the AST: unused imports, empty catch blocks, overly complex methods, missing null checks, raw type usage.
+. Detect common anti-patterns: God classes, feature envy, data clumps.
+. Check naming conventions and Javadoc presence.
+
+==== Outputs
+- List of warnings with severity, file, line number, and description
+- Categorized by: style, potential bug, anti-pattern, documentation gap
+
+---
+
+=== Phase 7 — LLM: Architecture Assessment
+
+==== Goal
+Identify architectural patterns and assess design quality using LLM reasoning.
+
+==== Processing
+. Submit the structural graph summary, layer analysis, and dependency patterns to the LLM.
+. Ask the LLM to identify: architectural style, pattern compliance, design strengths, risk areas.
+
+==== Outputs
+- Identified architectural style (Hexagonal, Layered, MVC, Event-Driven, etc.)
+- Pattern compliance assessment
+- Architecture risk areas
+- Suggested improvements
+
+---
+
+=== Phase 8 — RAG Embedding & Indexing
+
+==== Goal
+Chunk and embed all knowledge into pgvector for semantic retrieval.
+
+==== Processing
+. Chunk source files into semantically coherent segments (split on class/method boundaries, ~512 tokens with 64-token overlap).
+. Chunk LLM-generated summaries and assessments.
+. Generate vector embeddings using the configured embedding model (Ollama `nomic-embed-text` or OpenAI `text-embedding-3-small`).
+. Persist all chunks with their embeddings, metadata (file path, class name, phase), and job ID.
+
+==== Outputs
+- All knowledge embedded and searchable via cosine similarity
+- Job status transitions to `INDEXED`
+
+---
+
+== MCP Protocol Interface
+
+The primary interface is MCP JSON-RPC 2.0. Tools are grouped into pre-computed (instant) and on-demand (LLM-powered, heavier).
+
+=== Pre-Computed Tools (Instant Response)
 
 [cols="1,2,3", options="header"]
 |===
 | Tool Name | Parameters | Description
 
 | `analyse_project`
-| `projectPath` (string), `gitUrl` (string, optional)
-| Triggers the background 10-phase analysis on a local project directory or clones a Git repository. Returns the `jobId`.
+| `projectPath` (string) or `gitUrl` (string)
+| Triggers the analysis pipeline. Returns `jobId`. Progress queryable via `get_analysis_status`.
 
 | `get_analysis_status`
 | `jobId` (string)
-| Returns the current pipeline phase, status (PENDING, RUNNING, COMPLETED, INDEXED, FAILED), and progress percentage.
-
-| `search_codebase`
-| `jobId` (string), `query` (string)
-| Runs a similarity search on pgvector using the query embedding. Returns the top-K relevant text chunks and phase metadata.
-
-| `find_bugs`
-| `jobId` (string), `context` (string)
-| Queries the RAG database to identify code smells, testing gaps, and bugs in the codebase.
+| Returns pipeline phase, status (PENDING, RUNNING, COMPLETED, INDEXED, FAILED), and progress percentage.
 
 | `get_project_summary`
 | `jobId` (string)
-| Returns the high-level business purpose and functional summary extracted during Phase 1.
+| Pre-computed executive summary, business purpose, and system classification.
 
-| `get_ascii_report`
+| `get_architecture_overview`
 | `jobId` (string)
-| Retrieves the finished, compiled AsciiDoc report for the codebase.
+| Pre-computed architectural style, layer structure, module boundaries, pattern compliance.
+
+| `get_class_purpose`
+| `jobId` (string), `className` (string)
+| Pre-computed one-paragraph explanation of what the class does and why it exists.
+
+| `get_module_purpose`
+| `jobId` (string), `moduleName` (string)
+| Pre-computed module responsibility summary.
+
+| `get_related_classes`
+| `jobId` (string), `className` (string)
+| From the dependency graph: classes this class depends on, classes that depend on it, inheritance chain.
+
+| `get_class_diagram`
+| `jobId` (string), `packageName` (string)
+| PlantUML class diagram generated from the AST graph for the specified package.
+
+| `get_checkstyle_warnings`
+| `jobId` (string), `scope` (string, optional: file/package/all)
+| Pre-computed code style issues and anti-pattern detections.
+|===
+
+=== On-Demand Tools (LLM-Powered, Heavier)
+
+[cols="1,2,3", options="header"]
+|===
+| Tool Name | Parameters | Description
+
+| `search_codebase`
+| `jobId` (string), `query` (string)
+| Semantic similarity search over indexed code chunks. Returns top-K relevant code segments. Medium cost — embedding generation + vector query.
+
+| `get_possible_bugs`
+| `jobId` (string), `scope` (string, optional: className/packageName/all)
+| LLM analyzes relevant code chunks for potential bugs, null safety issues, race conditions, resource leaks. Heavy — 10-30 seconds.
+
+| `suggest_improvement`
+| `jobId` (string), `className` (string)
+| LLM suggests refactoring opportunities, design improvements, and clearer abstractions for a specific class. Heavy — 10-30 seconds.
 |===
 
 === MCP Resources
 
-The MCP server exposes static and dynamic resource URIs that AI clients can read:
+[cols="1,3", options="header"]
+|===
+| URI | Description
 
-* `mcp://analysis/jobs` - Returns a JSON array of all analysis jobs, paths, and status values.
-* `mcp://analysis/job/{jobId}/summary` - Exposes the Phase 1 executive summary and purpose.
-* `mcp://analysis/job/{jobId}/structure` - Exposes the project's build and package organization.
-* `mcp://analysis/job/{jobId}/report` - Exposes the raw compiled AsciiDoc report.
+| `mcp://analysis/jobs`
+| JSON array of all analysis jobs with status.
+
+| `mcp://analysis/job/{jobId}/summary`
+| Phase 4 executive summary.
+
+| `mcp://analysis/job/{jobId}/architecture`
+| Phase 7 architecture assessment.
+
+| `mcp://analysis/job/{jobId}/graph`
+| Serialized class dependency graph (JSON).
+|===
 
 === MCP Prompts
 
-The MCP server registers prompts that assist AI clients in formatting instructions:
+[cols="1,3", options="header"]
+|===
+| Name | Description
 
-* `review-codebase-risks` - Sets up a structured prompt for the AI to query the codebase and compile an architectural risk report.
-* `suggest-feature-impl` - Prepares a structured prompt to guide the AI in designing new features conforming to the codebase's architecture and conventions.
+| `review-codebase-risks`
+| Guides an AI client through querying architecture, warnings, and related classes to compile a risk report.
+
+| `suggest-feature-impl`
+| Guides an AI client through retrieving architecture context and class relationships before proposing feature implementation.
+
+| `onboard-to-project`
+| Guides an AI client through understanding the project step-by-step: summary → architecture → module purposes → key classes.
+|===
+
+=== Cold Start Behaviour
+
+When analysis is incomplete, tools return a structured message:
+
+[source,json]
+----
+{
+  "content": [{"type": "text", "text": "Analysis in progress. Phase 3 of 8 completed. Estimated 4 minutes remaining. Retry after completion."}],
+  "isError": true
+}
+----
+
+This enables the consuming LLM to understand the situation and retry.
 
 ---
 
-== Vaadin MCP Demo Client
+== Model Configuration
 
-The Vaadin web application acts as a browser-based client that demonstrates how an AI system utilizes the MCP server.
+The server supports separate model configuration for three concerns:
 
-* **Mode of Operation**: The Vaadin UI does *not* talk to the database or LLM directly. Instead, it embeds a LangChain4J chat assistant which is configured with an `McpClient` pointing to the Quarkus MCP SSE endpoint (`/mcp/sse`).
-* **Chat Interface**: The user chats with the assistant. If the user asks "What is the purpose of this project?" or "Find any bugs", the LLM client uses tool-calling to execute `get_project_summary` or `search_codebase` against the MCP server, displaying the response in the chat thread.
-* **Pipeline Panel**: A dashboard view that lists active jobs. When the user enters a path and clicks "Analyse", the client calls the `analyse_project` tool on the MCP server and displays live-push progress using Vaadin `@Push` notifications.
+[source,properties]
+----
+# Pipeline model (bulk analysis — can be cheap/local)
+analyser.pipeline.model-provider=ollama
+analyser.pipeline.model-name=llama3
+
+# Query model (on-demand reasoning — can be high-quality)
+analyser.query.model-provider=openai
+analyser.query.model-name=gpt-4o
+
+# Embedding model
+analyser.embedding.provider=ollama
+analyser.embedding.model-name=nomic-embed-text
+----
+
+The developer chooses the cost/quality tradeoff per concern.
+Using the same model for all three is valid and requires no extra configuration.
+
+---
+
+== Demo & Landing Page
+
+A Thymeleaf page served at `http://localhost:8080/` provides:
+
+- Server health status
+- List of analyzed projects and their pipeline progress
+- Copy-pasteable MCP configuration snippets for:
+  * Claude Code (`mcp.json`)
+  * Cursor (`.cursor/mcp.json`)
+  * Generic stdio connection command
+- Brief usage instructions
+
+No Vaadin. No chat interface. The demo *is* connecting your own agent and using it.
 
 ---
 
 == Non-Functional Requirements
 
 === Performance
-* The analysis pipeline shall complete within 12 minutes for a project with up to 500 production classes.
-* Query searches (pgvector similarity search) shall return results in less than 2 seconds.
-* SSE message throughput shall support multiple concurrent AI clients without message drop.
+* The analysis pipeline shall complete within 15 minutes for a project with up to 300 production classes using a local Ollama model.
+* Pre-computed tool responses shall return in less than 500ms.
+* RAG search shall return results in less than 2 seconds.
+* On-demand LLM tools shall return within 30 seconds.
 
 === Protocol Conformance
-* The server shall conform 100% to the Model Context Protocol specification v1.0.0.
-* Tool inputs must have strict JSON Schema schemas, and malformed requests must receive standard JSON-RPC 2.0 error responses.
+* The server shall conform to the Model Context Protocol specification (2024-11-05).
+* Tool inputs have strict JSON Schema definitions.
+* Malformed requests receive standard JSON-RPC 2.0 error responses.
 
 === Resumability
-* Intermediate phase results shall be cached so that an interrupted analysis resumes exactly where it failed.
+* Intermediate phase results are cached. An interrupted analysis resumes from the last completed phase.
+
+=== Scalability
+* The server handles multiple concurrent projects.
+* Each project analysis runs on a managed thread.
+* On-demand LLM tools handle concurrent requests without blocking each other.
 
 ---
 
 == Constraints and Assumptions
 
-* Stdio transport is meant for single-user local integrations (such as IDE extensions). Only one client can connect via Stdio per process instance.
-* SSE transport supports multi-client scenarios and is exposed over HTTP (port 8080).
-* The pgvector similarity threshold defaults to 0.75 and is configurable via application properties.
+* Stdio transport supports one client connection per process (matches how IDE extensions work).
+* SSE transport supports multiple concurrent clients over HTTP (port 8080).
+* pgvector similarity threshold defaults to 0.5 and is configurable.
+* JavaParser is used for AST extraction — supports Java 8 through 21.
+* Projects must use Maven or Gradle as build tool.
+* Docker Compose is the supported deployment method (PostgreSQL + Ollama + app).
+
+---
+
+== Out of Scope for v1
+
+* File watcher / automatic re-indexing on code change (manual re-trigger only)
+* Anthropic model provider (Ollama and OpenAI only)
+* Non-Java language support
+* Native image compilation
+* Graph database (pgvector + relational schema serves the graph needs for now)

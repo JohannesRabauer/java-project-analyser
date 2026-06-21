@@ -6,59 +6,63 @@ The table below maps each quality goal to the architectural decision that achiev
 |===
 | Quality Goal | Challenge | Architectural Decision | ADR
 
-| QG-1 Modifiability
+| QG-1 Protocol Conformance
+| MCP clients (Cursor, Claude Desktop, VS Code Copilot) expect a byte-exact JSON-RPC 2.0 handshake, tool discovery, and argument schema — any deviation silently drops the connection.
+| Hand-rolled MCP JSON-RPC 2.0 dispatcher in Quarkus: two transport adapters (Stdio pipe and SSE over HTTP) parse and emit raw JSON-RPC frames; strict Jackson schema validation rejects malformed requests before they reach business logic.
+| link:../decisions/adr-001-quarkus.adoc[ADR-001]
+
+| QG-2 Modifiability
 | Every LLM provider has a different SDK and API shape; every embedding provider has a different dimensionality and endpoint.
 | Hexagonal architecture: `LlmPort` isolates all LLM-specific code; `EmbeddingPort` isolates all embedding calls.
-Swapping providers means swapping one CDI bean each; zero domain or application-layer changes.
+Swapping providers means swapping one CDI bean — zero domain or application-layer changes.
+LangChain4J multi-provider abstraction exposes a single API over Ollama, OpenAI, and Anthropic for both chat and embedding models.
 | link:../decisions/adr-003-langchain4j.adoc[ADR-003], link:../decisions/adr-004-hexagonal-architecture.adoc[ADR-004]
 
-| QG-2 Deployability
-| Multiple LLM configurations (local, cloud) must coexist in one repository; pgvector must be available without extra setup.
-| Docker Compose named profiles: `local` spins up Ollama; `openai` / `anthropic` skip the local container.
-PostgreSQL image is `pgvector/pgvector:pg17` — pgvector is bundled; no manual extension installation needed.
-One command starts the right stack.
+| QG-3 Deployability
+| Multiple LLM configurations (local, cloud) must coexist in one repository; pgvector must be available without extra setup; developers need a single command.
+| Docker Compose named profiles: `local` spins up Ollama + PostgreSQL; cloud profiles skip the local LLM container.
+PostgreSQL image is `pgvector/pgvector:pg17` — pgvector is bundled.
+`docker compose --profile local up` starts the full stack in under 5 minutes.
 | link:../decisions/adr-005-docker-compose-profiles.adoc[ADR-005], link:../decisions/adr-008-pgvector.adoc[ADR-008]
 
-| QG-3 Functional Correctness
-| LLMs hallucinate; unstructured prompts produce inconsistent output; query results must be grounded in real code knowledge.
-| Phase-by-phase prompting (narrow context per phase); structured JSON output schema per phase; schema validation with one clarification retry; uncertainty marker preservation (BR-009); RAG retrieval ensures query answers are grounded in actual analysis results rather than LLM memory.
-| link:../decisions/adr-003-langchain4j.adoc[ADR-003], link:../decisions/adr-008-pgvector.adoc[ADR-008]
+| QG-4 Analysis Accuracy
+| LLMs hallucinate; unstructured prompts produce inconsistent output; pure LLM analysis misses structural facts that an AST reveals deterministically.
+| JavaParser AST extraction provides ground-truth structural knowledge (class relationships, method signatures, inheritance); LLM reasoning enriches this with semantic understanding (purpose, patterns, risks).
+Phase-by-phase prompting narrows context per phase; structured JSON output schema per phase; schema validation with one clarification retry; uncertainty markers preserved (BR-009).
+| link:../decisions/adr-003-langchain4j.adoc[ADR-003]
 
-| QG-4 Time Behaviour
-| Large projects generate more context than a single LLM call can handle; indexing all phase results must not dominate the total time.
-| Chunked batching with configurable batch size (BR-005); phase result caching so interrupted runs resume without re-spending tokens (BR-002); batch embedding in Phase 10 (all chunks for one phase sent in a single batched API call where supported).
+| QG-5 Time Behaviour
+| Large projects generate more context than a single LLM call can handle; embedding all phase results must not dominate total time; interrupted runs must not re-spend tokens.
+| Phase result caching (BR-002) — completed phases persist, so interrupted runs resume from the last successful phase.
+Batch embedding: all chunks for one phase are sent in a single batched API call where supported.
+Chunked batching with configurable batch size (BR-005) for large-context phases.
 | —
-
-| QG-5 Query Relevance
-| Semantic search quality depends on embedding quality and threshold configuration.
-| pgvector cosine similarity with configurable threshold (BR-019, default 0.75); BR-022 forces architectural context into feature queries regardless of threshold; top-K values tuned per capability (BR-021).
-| link:../decisions/adr-008-pgvector.adoc[ADR-008]
-
-| QG-6 Usability
-| Non-technical users must be able to run queries without deep tool knowledge.
-| Vaadin query views with guided, labelled inputs; structured outputs rendered as navigable tables and lists; one-click AsciiDoc / Markdown export.
-| link:../decisions/adr-002-vaadin.adoc[ADR-002]
 |===
 
 == Two-Phase System Design
 
-The system is explicitly designed in two operational phases:
+The system operates in two distinct phases, decoupled by a persistent knowledge graph in PostgreSQL.
 
 [cols="1,2,2", options="header"]
 |===
 | Phase | What happens | Key components
 
-| **Analyse** (Phases 1–10)
-| Source code is read, nine phases of LLM analysis execute, the analysis report is written, then Phase 10 embeds and indexes all results into PostgreSQL.
-| `AnalysisPipelineService`, `PhaseExecutors[1–9]`, `RagIndexingService`, `LlmPort`, `EmbeddingPort`, `RagPort`
+| **Analyse** (Phases 1–8)
+| Source code is read via Docker volume mount.
+JavaParser extracts the AST.
+Eight phases of LLM analysis execute sequentially (project summary, architecture, class purposes, module purposes, relationships, checkstyle, embedding, indexing).
+Results are chunked, embedded, and stored as RAG vectors in pgvector.
+| `AnalysisPipelineService`, `PhaseExecutors[1–8]`, `JavaParserFacade`, `LlmPort`, `EmbeddingPort`, `RagPort`
 
-| **Query** (UC-004 to UC-007)
-| User asks questions; system retrieves relevant knowledge base chunks by semantic similarity, submits them with the question to the LLM, and returns a structured result.
-| `QueryOrchestrationService`, `RiskAnalyserService`, `DocumentationComposerService`, `BugFinderService`, `FeatureAdvisorService`, `RagPort`, `LlmPort`
+| **Query** (on-demand MCP tools)
+| An MCP client calls a tool (e.g., `search_codebase`, `get_possible_bugs`).
+The dispatcher routes the request; the tool retrieves relevant knowledge-base chunks by semantic similarity, submits them with the question to the query-model LLM, and returns a structured result.
+Pre-computed tools (`get_project_summary`, `get_architecture_overview`) return cached phase results instantly.
+| MCP JSON-RPC 2.0 Dispatcher, `ToolRegistry`, `SemanticSearchService`, `LlmPort`, `RagPort`
 |===
 
-The two phases are decoupled: once a job is `INDEXED`, query capabilities are available indefinitely without re-running the analysis.
-Multiple query capability invocations can run against the same indexed job.
+Once a job is `INDEXED`, query tools are available indefinitely without re-running the analysis.
+Multiple MCP clients can query the same indexed job concurrently.
 
 == Technology Choices at a Glance
 
@@ -67,20 +71,20 @@ Multiple query capability invocations can run against the same indexed job.
 | Concern | Choice | Rationale (short)
 
 | Application framework
-| Quarkus 3
-| Best Vaadin integration; CDI; small container image. (ADR-001)
+| Quarkus 3 (Java 21)
+| Fast startup; CDI; small container image; Dev Services for local PostgreSQL. (ADR-001)
 
-| Browser UI
-| Vaadin Flow
-| Java throughout; server-push for live progress; no separate frontend build. (ADR-002)
+| AST extraction
+| JavaParser
+| Deterministic structural knowledge — class relationships, method signatures, annotations, inheritance — independent of LLM. Heart of the analysis accuracy strategy.
 
 | LLM integration
 | LangChain4J + quarkus-langchain4j
-| Single abstraction over Ollama, OpenAI, Anthropic and others — for both chat and embedding models. (ADR-003)
+| Single abstraction over Ollama, OpenAI, Anthropic for both chat and embedding models. (ADR-003)
 
 | Architecture style
 | Hexagonal (Ports & Adapters)
-| `LlmPort`, `EmbeddingPort`, `RagPort`, `ProjectSourcePort`, `CachePort`, `ReportPort` — all swappable without touching domain. (ADR-004)
+| `LlmPort`, `EmbeddingPort`, `RagPort`, `ProjectSourcePort`, `CachePort` — all swappable without touching domain. (ADR-004)
 
 | Deployment / LLM selection
 | Docker Compose profiles
@@ -94,9 +98,17 @@ Multiple query capability invocations can run against the same indexed job.
 | jOOQ + repository pattern
 | Type-safe SQL DSL including vector columns; codegen covers `rag_chunks` table. (ADR-006)
 
+| Agent interface
+| MCP JSON-RPC 2.0 (Stdio + SSE)
+| Standard protocol for AI-agent tool integration; connects to Cursor, Claude Desktop, VS Code Copilot without custom plugins.
+
+| Landing page
+| Thymeleaf
+| Lightweight server-side HTML for status display and MCP integration instructions; no JavaScript framework needed.
+
 | Local LLM runtime
 | Ollama
-| Docker-native; supports GPU passthrough; wide model catalogue including embedding models (nomic-embed-text).
+| Docker-native; GPU passthrough; wide model catalogue including embedding models (nomic-embed-text).
 
 | Build tool
 | Maven

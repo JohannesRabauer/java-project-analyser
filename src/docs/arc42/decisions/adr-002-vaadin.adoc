@@ -1,69 +1,67 @@
-= ADR-002: Vaadin Flow as Browser UI
+= ADR-002: Thymeleaf Landing Page (supersedes Vaadin)
 
 [cols="1,2"]
 |===
-| Status | Accepted
-| Date   | 2026-05-26
+| Status | Accepted (supersedes original ADR-002)
+| Date   | 2026-06-21
 |===
 
 == Context
 
-The application needs a browser UI to: configure an analysis run, show live phase-by-phase progress, and present the finished report with a download link.
-The team writes Java; a separate frontend technology would require a second skill set and a second build pipeline.
+The original ADR-002 chose Vaadin Flow as a browser UI for driving analysis runs and presenting reports.
+The product vision has changed: the system is now a headless MCP server.
+AI agents (Claude Code, Cursor) are the primary interface, not a browser.
 
-Options evaluated: Vaadin Flow (Java), React + REST API, Angular + REST API.
+A minimal landing page is still needed to show server status, analyzed projects, and integration instructions.
 
 == Pugh Matrix
 
-Baseline: Vaadin Flow.
+Baseline: Thymeleaf (server-rendered HTML).
 
 [cols="3,1,1,1", options="header"]
 |===
-| Criterion | Vaadin (baseline) | React + REST | Angular + REST
+| Criterion | Thymeleaf (baseline) | Vaadin | No UI at all
 
-| Single language (Java only)
+| Minimal dependencies
 | 0
 | -1
+| +1
+
+| Shows status + integration instructions
+| 0
+| 0
 | -1
 
-| No separate frontend build step
+| No JavaScript framework required
 | 0
 | -1
+| 0
+
+| Startup time impact
+| 0
 | -1
+| +1
 
-| Server-push for live progress updates
-| 0
-| 0
-| 0
-
-| UI component library quality
-| 0
-| 0
-| 0
-
-| End-to-end type safety (Java → browser)
+| Matches headless-first design
 | 0
 | -1
 | 0
 
 | *Total*
 | *0*
-| *-3*
-| *-2*
+| *-4*
+| *+1*
 |===
 
 == Decision
 
-Vaadin Flow.
+Thymeleaf server-rendered landing page at `localhost:8080/`.
 
-The primary driver is developer experience: all UI code is written in Java in the same CDI container as the analysis pipeline.
-Real-time progress updates are delivered via Vaadin's built-in server push (WebSocket), with no REST API design required.
+"No UI at all" scored higher but loses the ability to show copy-pasteable MCP config snippets to new users — the primary onboarding path.
 
 == Consequences
 
-* UI logic runs on the server; browser sends only DOM events.
-All state lives in the Vaadin session, which is tied to the Quarkus `@SessionScoped` CDI scope.
-* Vaadin requires a JavaScript runtime in the browser (modern browsers only — not a constraint for this tool's users).
-* Long-running analyses (> 10 min) must keep the WebSocket alive; Quarkus session timeout must be configured to exceed the maximum expected analysis duration.
-* Testing requires either Vaadin TestBench (commercial) or Playwright targeting the rendered HTML.
-* The `vaadin-quarkus-extension` version couples Vaadin and Quarkus release cycles (R-002).
+* Single HTML template + minimal CSS. No WebSocket, no server push, no session state.
+* Page shows: health status, list of analyzed projects, and MCP config snippets for Claude Code / Cursor.
+* Vaadin dependency removed entirely from `pom.xml`.
+* No Vaadin TestBench or Playwright testing needed — a simple HTTP integration test suffices.

@@ -1,0 +1,440 @@
+= Implementation Plan — Java Project Analyser
+:toc: left
+:toclevels: 2
+:sectnums:
+
+== Strategy
+
+Build as thin vertical slices, each deployable and testable end-to-end.
+Start with a walking skeleton that wires all architectural layers together.
+Each slice adds one piece of user value on top of the skeleton.
+
+Code to delete before starting:
+
+* `AnalysisPipelineService` — the entire 450-line god class with regex "analysis" and mock embeddings. Replace with thin orchestrator + dedicated phase services.
+* `McpDispatcher` — rewrite. Current implementation hardcodes tool logic inside the dispatcher. New design: dispatcher routes to tool handlers.
+* `adapter/in/ui/` — if any Vaadin UI code remains. Kill it.
+* Any Vaadin dependencies from `pom.xml`.
+
+---
+
+== EPIC 1: Walking Skeleton (MCP + JavaParser + One Tool)
+
+Goal: A deployable system where an agent can call `analyse_project`, the server parses Java files with JavaParser, and the agent can retrieve one pre-computed result.
+
+=== Issue 1.1: Strip Vaadin, add JavaParser + Thymeleaf dependencies
+Priority: Must
+Dependencies: None
+
+* Remove Vaadin from `pom.xml`
+* Add `com.github.javaparser:javaparser-core` dependency
+* Add `quarkus-qute` or `quarkus-resteasy-reactive-qute` for Thymeleaf-style templating (Quarkus uses Qute, not Thymeleaf — decide here)
+* Verify `./mvnw clean compile` passes
+
+=== Issue 1.2: Introduce JavaParserAstService — parse one file
+Priority: Must
+Dependencies: 1.1
+
+* Create `dev.analyser.domain.service.JavaParserAstService`
+* Method: `parseFile(Path) : CompilationUnitSummary`
+* Extract: class name, package, superclass, interfaces, method signatures, field types, annotations
+* Return a domain model record (not JavaParser types leaked out)
+* TDD: Unit test with a fixture `.java` file
+
+=== Issue 1.3: Build class graph from parsed ASTs
+Priority: Must
+Dependencies: 1.2
+
+* Create `dev.analyser.domain.model.ClassGraph` (adjacency structure)
+* `JavaParserAstService.buildGraph(List<Path>) : ClassGraph`
+* Nodes: classes. Edges: extends, implements, imports (depends-on), contains (inner class)
+* TDD: Given 3 fixture classes with known relationships, assert graph edges
+
+=== Issue 1.4: Rewrite AnalysisPipelineService as thin orchestrator
+Priority: Must
+Dependencies: 1.3
+
+* Delete the existing `AnalysisPipelineService` body
+* New pipeline: Phase 1 only (AST parsing + graph construction)
+* Uses `ProjectSourcePort` to load files, `JavaParserAstService` to parse, `CachePort` to store result
+* Stores graph as serialized JSON in phase result
+* Transitions job: PENDING → RUNNING → COMPLETED (no INDEXED yet)
+* TDD: Unit test with in-memory ports (keep existing test doubles pattern)
+
+=== Issue 1.5: Implement CachePort (production adapter)
+Priority: Must
+Dependencies: 1.4
+
+* Create `dev.analyser.adapter.out.cache.FilesystemCacheAdapter implements CachePort`
+* Reads/writes phase result JSON files in `${analysis.cache-path}/<jobId>/phase-<N>.json`
+* Atomic writes (write to `.tmp`, rename)
+* TDD: Integration test writing and reading back phase results
+
+=== Issue 1.6: Rewrite McpDispatcher to route to tool handlers
+Priority: Must
+Dependencies: 1.4
+
+* Create a `McpToolHandler` interface: `handle(JsonNode args) : ToolCallResult`
+* One implementation per tool (start with `AnalyseProjectHandler`, `GetAnalysisStatusHandler`)
+* `McpDispatcher` discovers handlers via CDI, routes by tool name
+* Keep existing protocol records (`McpProtocol.java`)
+* TDD: Unit test — dispatch `tools/call` with `analyse_project`, verify handler invoked
+
+=== Issue 1.7: Implement `get_related_classes` tool
+Priority: Must
+Dependencies: 1.3, 1.6
+
+* `GetRelatedClassesHandler implements McpToolHandler`
+* Queries the class graph (stored in phase result) for a given class name
+* Returns: depends-on, depended-on-by, extends, implements
+* TDD: Integration test — analyse a fixture project, then call the tool
+
+=== Issue 1.8: Landing page (Thymeleaf/Qute)
+Priority: Should
+Dependencies: 1.6
+
+* Simple HTML page at `GET /`
+* Shows: server status (UP), list of analysis jobs + status, MCP config snippets
+* No JavaScript — pure server-rendered HTML
+
+=== Issue 1.9: End-to-end smoke test
+Priority: Must
+Dependencies: 1.7
+
+* Testcontainers-based integration test
+* Sends MCP JSON-RPC messages (stdio-style, via the dispatcher)
+* Flow: `analyse_project` → wait for completion → `get_related_classes` → verify response
+* This proves the walking skeleton works
+
+---
+
+== EPIC 2: LLM Integration (Pipeline Model)
+
+Goal: Phases 4, 5, 7 call a real LLM (Ollama or OpenAI) to generate summaries and assessments.
+
+=== Issue 2.1: Implement LlmPort + LangChain4J adapter
+Priority: Must
+Dependencies: EPIC 1
+
+* Create `dev.analyser.application.port.out.LlmPort` interface: `prompt(String systemPrompt, String userPrompt) : String`
+* Create `dev.analyser.adapter.out.llm.LangChain4JLlmAdapter implements LlmPort`
+* Wire to `quarkus-langchain4j-ollama` / `quarkus-langchain4j-openai` based on config
+* Support `analyser.pipeline.model-provider` and `analyser.pipeline.model-name` config keys
+* TDD: Integration test with WireMock simulating Ollama `/api/chat`
+
+=== Issue 2.2: Phase 4 — LLM project + module summaries
+Priority: Must
+Dependencies: 2.1, 1.4
+
+* Add Phase 4 to the pipeline orchestrator
+* Input: README content, build descriptor info, top-level class names from graph
+* Prompt the pipeline LLM for: executive summary, business purpose, system classification
+* Store structured JSON result
+* TDD: Unit test with mock LlmPort returning a known response
+
+=== Issue 2.3: Phase 5 — LLM class purpose summaries
+Priority: Must
+Dependencies: 2.1, 1.3
+
+* Add Phase 5 to the pipeline
+* For each class (batched): submit source code + graph context → LLM → one-paragraph purpose
+* Batch strategy: group 5-10 classes per LLM call to reduce round-trips
+* Store per-class summaries in phase result JSON
+* TDD: Unit test verifying batching logic and result parsing
+
+=== Issue 2.4: Phase 7 — LLM architecture assessment
+Priority: Should
+Dependencies: 2.1, 1.3
+
+* Add Phase 7 to the pipeline
+* Input: graph metrics (from Phase 3), package structure, layer analysis
+* Prompt LLM for: architectural style identification, pattern compliance, risk areas
+* TDD: Unit test with mock LlmPort
+
+=== Issue 2.5: Implement `get_project_summary` and `get_class_purpose` tools
+Priority: Must
+Dependencies: 2.2, 2.3
+
+* Two tool handlers reading Phase 4 and Phase 5 results
+* `get_project_summary` returns the executive summary
+* `get_class_purpose(className)` looks up the class in Phase 5 results
+* TDD: End-to-end test — analyse fixture project → query tools
+
+=== Issue 2.6: Separate pipeline/query model configuration
+Priority: Should
+Dependencies: 2.1
+
+* `analyser.pipeline.model-provider` / `analyser.pipeline.model-name`
+* `analyser.query.model-provider` / `analyser.query.model-name`
+* LangChain4J adapter selects the correct model bean based on call context
+* Document in README and application.properties
+
+---
+
+== EPIC 3: RAG Indexing + Semantic Search
+
+Goal: Phase 8 embeds all knowledge into pgvector. The `search_codebase` tool performs real semantic search.
+
+=== Issue 3.1: Implement EmbeddingPort + LangChain4J adapter
+Priority: Must
+Dependencies: EPIC 1
+
+* Create `dev.analyser.application.port.out.EmbeddingPort`: `embed(String text) : float[]`, `embedBatch(List<String>) : List<float[]>`
+* Create `dev.analyser.adapter.out.llm.LangChain4JEmbeddingAdapter implements EmbeddingPort`
+* Wire to Ollama `nomic-embed-text` or OpenAI `text-embedding-3-small` based on config
+* TDD: Integration test with WireMock
+
+=== Issue 3.2: Phase 8 — Chunk + embed + store in pgvector
+Priority: Must
+Dependencies: 3.1, 2.3
+
+* Replace mock embedding logic with real `EmbeddingPort` calls
+* Chunking strategy: split on class/method boundaries (use AST from Phase 1), target ~512 tokens per chunk
+* Store chunks in `rag_chunks` table with real embeddings
+* Mark job as INDEXED on completion
+* TDD: Integration test with Testcontainers PostgreSQL + WireMock embedding endpoint
+
+=== Issue 3.3: Implement `search_codebase` tool with real RAG
+Priority: Must
+Dependencies: 3.2
+
+* `SearchCodebaseHandler` embeds the query, then runs pgvector similarity search
+* Returns top-5 chunks with similarity scores and file paths
+* TDD: End-to-end test — index a fixture project, search for a known concept
+
+=== Issue 3.4: Lower similarity threshold to 0.5 (configurable)
+Priority: Should
+Dependencies: 3.3
+
+* Current default is 0.75 — too restrictive with real embeddings
+* Make configurable: `rag.search.similarity-threshold=0.5`
+
+---
+
+== EPIC 4: Static Analysis + Graph Metrics
+
+Goal: Phases 3 and 6 produce deterministic quality data (no LLM needed).
+
+=== Issue 4.1: Phase 3 — Graph metrics (cohesion, coupling, cycles)
+Priority: Must
+Dependencies: 1.3
+
+* Calculate: afferent/efferent coupling per package, abstractness, instability
+* Detect circular dependency chains (DFS on graph)
+* Identify complexity hotspots (methods > 20 LOC, classes > 300 LOC)
+* TDD: Unit test with known graph fixtures
+
+=== Issue 4.2: Phase 6 — Static analysis rules (AST-based)
+Priority: Must
+Dependencies: 1.2
+
+* Detect via JavaParser AST visitors:
+  - Empty catch blocks
+  - Unused private methods
+  - God classes (> 20 methods or > 500 LOC)
+  - Missing null checks on return values
+  - Raw type usage
+  - System.out/err usage (should use logger)
+* Return structured warnings: severity, file, line, rule ID, message
+* TDD: Unit test per rule with positive/negative fixture
+
+=== Issue 4.3: Implement `get_checkstyle_warnings` tool
+Priority: Must
+Dependencies: 4.2
+
+* Returns Phase 6 results, optionally filtered by scope (file, package, all)
+* TDD: Analyse fixture with known issues → verify tool returns them
+
+=== Issue 4.4: Implement `get_architecture_overview` tool
+Priority: Should
+Dependencies: 4.1, 2.4
+
+* Combines Phase 3 metrics + Phase 7 LLM assessment
+* Returns: architectural style, layer structure, module boundaries, metrics summary
+
+---
+
+== EPIC 5: On-Demand LLM Tools
+
+Goal: `get_possible_bugs` and `suggest_improvement` call the query model at request time.
+
+=== Issue 5.1: Implement `get_possible_bugs` tool
+Priority: Must
+Dependencies: 3.3, 2.1
+
+* Embeds the scope/query, retrieves relevant RAG chunks
+* Calls the *query* model (not pipeline model) with chunks + bug-finding prompt
+* Returns structured findings: location, severity, description, confidence
+* TDD: Integration test with WireMock LLM returning mock bug findings
+
+=== Issue 5.2: Implement `suggest_improvement` tool
+Priority: Should
+Dependencies: 3.3, 2.1
+
+* Retrieves RAG chunks for the specified class + its graph context
+* Calls query model with refactoring/improvement prompt
+* Returns structured suggestions
+* TDD: Integration test
+
+=== Issue 5.3: Concurrency + timeout for on-demand tools
+Priority: Must
+Dependencies: 5.1
+
+* On-demand tools run on a bounded thread pool (max 4 concurrent)
+* 30-second timeout per call
+* Return structured error on timeout
+* TDD: Test with a slow mock LLM verifying timeout behaviour
+
+---
+
+== EPIC 6: Phase 2 + Remaining Pre-Computed Tools
+
+Goal: Complete the pipeline phases and tool coverage.
+
+=== Issue 6.1: Phase 2 — Dependency & technology extraction
+Priority: Must
+Dependencies: 1.2
+
+* Parse `pom.xml` for dependencies (groupId, artifactId, version)
+* Detect frameworks from import patterns and annotations
+* Map REST endpoints from `@Path`, `@GetMapping`, etc.
+* TDD: Fixture project with known deps → verify extraction
+
+=== Issue 6.2: Implement `get_module_purpose` tool
+Priority: Should
+Dependencies: 2.2
+
+* Returns per-module summary from Phase 4 results
+
+=== Issue 6.3: Implement `get_class_diagram` tool
+Priority: Should
+Dependencies: 1.3
+
+* Generates PlantUML class diagram from the class graph, scoped to a package
+* Returns PlantUML text (the consuming agent can render it)
+* TDD: Known graph → verify valid PlantUML output
+
+---
+
+== EPIC 7: Docker Compose + Deployment Polish
+
+Goal: Production-ready Docker deployment.
+
+=== Issue 7.1: Update Dockerfile and docker-compose.yml
+Priority: Must
+Dependencies: EPIC 1
+
+* Remove any Vaadin build steps from Dockerfile
+* Ensure app starts in stdio-capable mode (configurable: `mcp.stdio.enabled=false` when running as HTTP-only server)
+* Verify `docker compose --profile local up` starts all services
+
+=== Issue 7.2: Stdio transport — don't auto-start on boot
+Priority: Must
+Dependencies: 1.6
+
+* Current `StdioMcpHandler` starts on every boot and blocks stdin
+* Fix: Only start when `--stdio` CLI arg is passed OR when configured
+* HTTP mode (SSE + landing page) is the default Docker mode
+* Stdio mode is for direct IDE integration (launched per-session)
+
+=== Issue 7.3: `.env.example` with all configuration documented
+Priority: Should
+Dependencies: 2.6
+
+* Document all config keys with comments
+* Include model selection for pipeline, query, and embedding
+
+---
+
+== Implementation Order (Suggested)
+
+[cols="1,2,1", options="header"]
+|===
+| Order | Issue | Rationale
+
+| 1
+| 1.1 (Strip Vaadin, add deps)
+| Clean foundation
+
+| 2
+| 1.2 (JavaParser parse one file)
+| Heart of the system
+
+| 3
+| 1.3 (Build class graph)
+| Core data structure
+
+| 4
+| 1.5 (CachePort implementation)
+| Required by pipeline
+
+| 5
+| 1.4 (Rewrite pipeline orchestrator)
+| Wires it all together
+
+| 6
+| 1.6 (Rewrite McpDispatcher)
+| Routing layer
+
+| 7
+| 1.7 (`get_related_classes` tool)
+| First usable tool
+
+| 8
+| 1.9 (End-to-end smoke test)
+| Walking skeleton proven
+
+| 9
+| 7.2 (Stdio transport fix)
+| Unblocks real agent testing
+
+| 10
+| 2.1 (LlmPort + adapter)
+| Enables LLM phases
+
+| 11
+| 3.1 (EmbeddingPort + adapter)
+| Enables RAG
+
+| 12
+| 2.2–2.3 (LLM phases 4, 5)
+| Summaries available
+
+| 13
+| 4.1–4.2 (Static analysis phases)
+| Deterministic quality data
+
+| 14
+| 3.2–3.3 (RAG indexing + search)
+| Semantic search works
+
+| 15
+| 2.5 (Summary tools)
+| Pre-computed tools complete
+
+| 16
+| 5.1–5.3 (On-demand tools)
+| Full tool taxonomy
+
+| 17
+| 6.1–6.3 (Remaining tools)
+| Feature complete
+
+| 18
+| 1.8 (Landing page)
+| Polish
+
+| 19
+| 7.1, 7.3 (Docker polish)
+| Production ready
+|===
+
+---
+
+== Definition of Done (per issue)
+
+* Code compiles (`./mvnw clean verify`)
+* All tests pass (unit + integration where applicable)
+* Test references the use case or phase it covers
+* No Vaadin imports anywhere in the codebase
+* Conventional commit message referencing issue number

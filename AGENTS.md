@@ -1,4 +1,4 @@
-# Project: Java-Project-Analyzer
+1. # Project: Java-Project-Analyzer
 
 ## Key Documents
 - PRD: src/docs/specs/prd.adoc

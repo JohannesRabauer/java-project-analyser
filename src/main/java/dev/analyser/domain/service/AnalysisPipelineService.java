@@ -3,7 +3,9 @@ package dev.analyser.domain.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.analyser.adapter.out.persistence.AnalysisJobRepository;
+import dev.analyser.adapter.out.persistence.RagRepository;
 import dev.analyser.application.port.out.CachePort;
+import dev.analyser.application.port.out.EmbeddingPort;
 import dev.analyser.application.port.out.LlmPort;
 import dev.analyser.application.port.out.ProjectSourcePort;
 import dev.analyser.domain.model.*;
@@ -26,6 +28,8 @@ public class AnalysisPipelineService {
     private final CachePort cachePort;
     private final JavaParserAstService astService;
     private final LlmPort pipelineLlm;
+    private final EmbeddingPort embeddingPort;
+    private final RagRepository ragRepository;
     private final ObjectMapper mapper = new ObjectMapper();
     private final ExecutorService executor = Executors.newFixedThreadPool(4);
 
@@ -38,21 +42,25 @@ public class AnalysisPipelineService {
             ProjectSourcePort projectSourcePort,
             CachePort cachePort,
             JavaParserAstService astService,
-            @Named("pipelineLlm") LlmPort pipelineLlm) {
+            @Named("pipelineLlm") LlmPort pipelineLlm,
+            EmbeddingPort embeddingPort,
+            RagRepository ragRepository) {
         this.jobRepository = jobRepository;
         this.projectSourcePort = projectSourcePort;
         this.cachePort = cachePort;
         this.astService = astService;
         this.pipelineLlm = pipelineLlm;
+        this.embeddingPort = embeddingPort;
+        this.ragRepository = ragRepository;
     }
 
-    // Constructor for tests without LLM
+    // Constructor for tests without LLM/embedding
     public AnalysisPipelineService(
             AnalysisJobRepository jobRepository,
             ProjectSourcePort projectSourcePort,
             CachePort cachePort,
             JavaParserAstService astService) {
-        this(jobRepository, projectSourcePort, cachePort, astService, null);
+        this(jobRepository, projectSourcePort, cachePort, astService, null, null, null);
     }
 
     public AnalysisJob startAnalysis(UUID jobId, ProjectSource source) {
@@ -112,6 +120,11 @@ public class AnalysisPipelineService {
             savePhase(jobId, reuseOrRun(cached, jobId, 7, () -> runPhase7(jobId)));
 
             jobRepository.updateStatus(jobId, AnalysisStatus.COMPLETED);
+
+            // Phase 8: RAG embedding & indexing
+            runPhase8(jobId);
+
+            jobRepository.updateStatus(jobId, AnalysisStatus.INDEXED);
         } catch (Exception e) {
             jobRepository.updateStatus(jobId, AnalysisStatus.FAILED);
         }
@@ -143,7 +156,6 @@ public class AnalysisPipelineService {
         tree.buildDescriptor().ifPresent(bd -> {
             try {
                 String content = Files.readString(bd);
-                // Extract dependency declarations from pom.xml
                 var matcher = java.util.regex.Pattern.compile(
                         "<dependency>\\s*<groupId>([^<]+)</groupId>\\s*<artifactId>([^<]+)</artifactId>",
                         java.util.regex.Pattern.DOTALL).matcher(content);
@@ -155,6 +167,8 @@ public class AnalysisPipelineService {
 
         // Detect technologies from imports
         Set<String> techs = new LinkedHashSet<>();
+        var endpoints = new ArrayList<Map<String, String>>();
+
         for (var cls : classStore.getOrDefault(jobId, List.of())) {
             for (String imp : cls.imports()) {
                 if (imp.startsWith("io.quarkus")) techs.add("Quarkus");
@@ -162,10 +176,35 @@ public class AnalysisPipelineService {
                 else if (imp.startsWith("jakarta.ws.rs")) techs.add("JAX-RS");
                 else if (imp.startsWith("org.jooq")) techs.add("jOOQ");
                 else if (imp.startsWith("com.github.javaparser")) techs.add("JavaParser");
+                else if (imp.startsWith("dev.langchain4j")) techs.add("LangChain4J");
+            }
+
+            // Detect REST endpoints from class-level and method-level annotations
+            boolean isRestController = cls.annotations().stream()
+                    .anyMatch(a -> a.equals("Path") || a.equals("RestController") || a.equals("Controller"));
+            if (isRestController) {
+                for (var method : cls.methods()) {
+                    for (String ann : method.annotations()) {
+                        String httpMethod = switch (ann) {
+                            case "GET", "GetMapping" -> "GET";
+                            case "POST", "PostMapping" -> "POST";
+                            case "PUT", "PutMapping" -> "PUT";
+                            case "DELETE", "DeleteMapping" -> "DELETE";
+                            case "PATCH", "PatchMapping" -> "PATCH";
+                            default -> null;
+                        };
+                        if (httpMethod != null) {
+                            endpoints.add(Map.of(
+                                    "method", httpMethod,
+                                    "handler", cls.className() + "." + method.name(),
+                                    "controller", cls.qualifiedName()));
+                        }
+                    }
+                }
             }
         }
 
-        String json = toJson(Map.of("dependencies", deps, "technologies", techs));
+        String json = toJson(Map.of("dependencies", deps, "technologies", techs, "endpoints", endpoints));
         return phaseResult(jobId, 2, json);
     }
 
@@ -279,6 +318,26 @@ public class AnalysisPipelineService {
             if (cls.kind() == ClassSummary.ClassKind.CLASS && cls.methods().stream().noneMatch(m -> m.isPublic())) {
                 warnings.add(warning(cls, "no-public-api", "LOW", "Class has no public methods"));
             }
+            // System.out usage
+            if (cls.imports().stream().anyMatch(i -> i.contains("System"))) {
+                // Heuristic — check field/method names isn't reliable, but annotations can hint
+            }
+            // Empty interface (marker interface without justification)
+            if (cls.kind() == ClassSummary.ClassKind.INTERFACE && cls.methods().isEmpty()) {
+                warnings.add(warning(cls, "empty-interface", "LOW", "Interface declares no methods (marker interface)"));
+            }
+            // High method complexity (too many parameters)
+            for (var method : cls.methods()) {
+                if (method.parameterTypes().size() > 5) {
+                    warnings.add(warning(cls, "too-many-params", "MEDIUM",
+                            "Method " + method.name() + " has " + method.parameterTypes().size() + " parameters — consider a parameter object"));
+                }
+            }
+            // Class depends on too many others (high efferent coupling)
+            if (cls.imports().size() > 20) {
+                warnings.add(warning(cls, "high-coupling", "MEDIUM",
+                        "Class imports " + cls.imports().size() + " types — high coupling"));
+            }
         }
 
         return phaseResult(jobId, 6, toJson(Map.of("warnings", warnings, "totalWarnings", warnings.size())));
@@ -307,6 +366,58 @@ public class AnalysisPipelineService {
                 "Assess the architecture of this Java project:\n" + context);
 
         return phaseResult(jobId, 7, response);
+    }
+
+    private void runPhase8(UUID jobId) {
+        if (embeddingPort == null || ragRepository == null) return;
+
+        var classes = classStore.getOrDefault(jobId, List.of());
+        var chunks = new ArrayList<RagChunk>();
+
+        // Chunk each class: source summary + methods as one chunk per class
+        for (var cls : classes) {
+            String content = buildChunkContent(cls);
+            if (content.length() < 50) continue;
+
+            float[] embedding = embeddingPort.embed(content);
+            double[] vector = toDoubleArray(embedding);
+            chunks.add(new RagChunk(UUID.randomUUID(), jobId, 8, content, vector));
+        }
+
+        // Also embed all phase result summaries
+        for (int phase = 1; phase <= 7; phase++) {
+            var resultJson = phaseResultStore.getOrDefault(jobId, Map.of()).get(phase);
+            if (resultJson != null && resultJson.length() > 50) {
+                String phaseContent = "Phase " + phase + " result:\n" + resultJson;
+                float[] embedding = embeddingPort.embed(phaseContent);
+                chunks.add(new RagChunk(UUID.randomUUID(), jobId, 8, phaseContent, toDoubleArray(embedding)));
+            }
+        }
+
+        if (!chunks.isEmpty()) {
+            ragRepository.saveAll(chunks);
+        }
+    }
+
+    private String buildChunkContent(ClassSummary cls) {
+        var sb = new StringBuilder();
+        sb.append("Class: ").append(cls.qualifiedName()).append(" (").append(cls.kind()).append(")\n");
+        if (cls.superClass() != null) sb.append("Extends: ").append(cls.superClass()).append("\n");
+        if (!cls.interfaces().isEmpty()) sb.append("Implements: ").append(String.join(", ", cls.interfaces())).append("\n");
+        if (!cls.annotations().isEmpty()) sb.append("Annotations: ").append(String.join(", ", cls.annotations())).append("\n");
+        sb.append("Methods: ");
+        sb.append(cls.methods().stream()
+                .map(m -> m.returnType() + " " + m.name() + "(" + String.join(", ", m.parameterTypes()) + ")")
+                .collect(Collectors.joining(", ")));
+        sb.append("\nFields: ");
+        sb.append(cls.fields().stream().map(f -> f.type() + " " + f.name()).collect(Collectors.joining(", ")));
+        return sb.toString();
+    }
+
+    private double[] toDoubleArray(float[] floats) {
+        double[] doubles = new double[floats.length];
+        for (int i = 0; i < floats.length; i++) doubles[i] = floats[i];
+        return doubles;
     }
 
     private void savePhase(UUID jobId, PhaseResult result) {

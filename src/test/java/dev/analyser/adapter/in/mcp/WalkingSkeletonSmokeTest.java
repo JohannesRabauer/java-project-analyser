@@ -88,7 +88,7 @@ class WalkingSkeletonSmokeTest {
                 .formatted(jobId));
 
         assertThat(statusResponse.get("result").get("content").get(0).get("text").asText())
-                .contains("COMPLETED");
+                .containsAnyOf("COMPLETED", "INDEXED");
 
         // 4. Query related classes
         var relatedResponse = dispatch("""

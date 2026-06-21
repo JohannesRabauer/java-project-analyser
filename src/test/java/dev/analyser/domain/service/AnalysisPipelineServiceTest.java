@@ -51,8 +51,8 @@ class AnalysisPipelineServiceTest {
 
         service.runPipeline(job.start(Instant.now()));
 
-        // Job should be COMPLETED
-        assertThat(jobRepo.lastStatus(jobId)).isEqualTo(AnalysisStatus.COMPLETED);
+        // Job should be INDEXED
+        assertThat(jobRepo.lastStatus(jobId)).isEqualTo(AnalysisStatus.INDEXED);
 
         // All 7 phases should be saved
         var phases = jobRepo.getPhaseResults(jobId);

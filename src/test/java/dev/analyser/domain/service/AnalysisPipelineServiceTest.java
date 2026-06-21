@@ -44,7 +44,7 @@ class AnalysisPipelineServiceTest {
     }
 
     @Test
-    void runPipelineCompletesPhase1WithAstParsing() {
+    void runPipelineCompletesAllPhasesWithAstParsing() {
         var jobId = UUID.randomUUID();
         var job = AnalysisJob.create(jobId, new LocalSource(projectRoot), Instant.now());
         jobRepo.create(job);
@@ -54,14 +54,14 @@ class AnalysisPipelineServiceTest {
         // Job should be COMPLETED
         assertThat(jobRepo.lastStatus(jobId)).isEqualTo(AnalysisStatus.COMPLETED);
 
-        // Phase 1 result should be saved
+        // All 7 phases should be saved
         var phases = jobRepo.getPhaseResults(jobId);
-        assertThat(phases).hasSize(1);
+        assertThat(phases).hasSize(7);
         assertThat(phases.get(0).phaseId()).isEqualTo(1);
         assertThat(phases.get(0).resultJson()).contains("OrderService");
 
-        // Cache should have phase 1
-        assertThat(cachePort.savedPhaseIds()).containsExactly(1);
+        // Cache should have all 7 phases
+        assertThat(cachePort.savedPhaseIds()).containsExactly(1, 2, 3, 4, 5, 6, 7);
     }
 
     @Test
@@ -83,15 +83,15 @@ class AnalysisPipelineServiceTest {
         var job = AnalysisJob.create(jobId, new LocalSource(projectRoot), Instant.now());
         jobRepo.create(job);
 
-        // Pre-populate cache
+        // Pre-populate cache for phase 1
         cachePort.save(new PhaseResult(jobId, 1, PhaseStatus.COMPLETED, "{\"cached\":true}", Instant.now()));
 
         service.runPipeline(job.start(Instant.now()));
 
-        // Should reuse cached result, not re-parse
+        // Phase 1 should reuse cached result
         assertThat(jobRepo.getPhaseResults(jobId).get(0).resultJson()).isEqualTo("{\"cached\":true}");
-        // Cache should NOT have been written again (only 1 entry from pre-population)
-        assertThat(cachePort.savedPhaseIds()).containsExactly(1);
+        // Phases 2-7 should be newly computed and saved
+        assertThat(cachePort.savedPhaseIds()).contains(2, 3, 4, 5, 6, 7);
     }
 
     private void createFixtureProject() throws IOException {

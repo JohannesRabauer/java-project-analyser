@@ -1,85 +1,84 @@
 package dev.analyser.adapter.in.mcp;
 
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dev.analyser.adapter.out.persistence.RagRepository;
-import dev.analyser.domain.model.AnalysisJob;
-import dev.analyser.domain.model.GitSource;
-import dev.analyser.domain.model.LocalSource;
-import dev.analyser.domain.model.ProjectSource;
-import dev.analyser.domain.service.AnalysisPipelineService;
-import java.time.Instant;
-import java.util.UUID;
+import dev.analyser.adapter.in.mcp.McpProtocol.ToolCallResult;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 class McpDispatcherTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Test
-    void uc001_shouldPreferGitSourceWhenGitUrlIsProvided() throws Exception {
-        var pipelineService = new CapturingPipelineService();
-        var dispatcher = new McpDispatcher(pipelineService, null, new RagRepository(null));
+    void initializeReturnsProtocolVersion() throws Exception {
+        var dispatcher = new McpDispatcher(List.of());
+        var response = dispatch(dispatcher, """
+                {"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}""");
 
-        var response = dispatcher.dispatch("""
-                {
-                  "jsonrpc": "2.0",
-                  "id": 11,
-                  "method": "tools/call",
-                  "params": {
-                    "name": "analyse_project",
-                    "arguments": {
-                      "projectPath": "/workspace/project",
-                      "gitUrl": "https://github.com/example/project.git"
-                    }
-                  }
-                }
-                """);
-
-        assertNotNull(mapper.readTree(response).get("result"));
-        var gitSource = assertInstanceOf(GitSource.class, pipelineService.capturedSource);
-        assertNotNull(pipelineService.capturedJobId);
-        assertNotNull(gitSource.repositoryUrl());
+        assertThat(response.get("result").get("protocolVersion").asText()).isEqualTo("2024-11-05");
+        assertThat(response.get("result").get("serverInfo").get("name").asText()).isEqualTo("Java-Project-Analyser-MCP");
     }
 
     @Test
-    void uc001_shouldUseLocalSourceWhenGitUrlIsMissing() {
-        var pipelineService = new CapturingPipelineService();
-        var dispatcher = new McpDispatcher(pipelineService, null, new RagRepository(null));
+    void toolsListReturnsRegisteredHandlers() throws Exception {
+        var handler = stubHandler("test_tool", "A test tool");
+        var dispatcher = new McpDispatcher(List.of(handler));
 
-        dispatcher.dispatch("""
-                {
-                  "jsonrpc": "2.0",
-                  "id": 12,
-                  "method": "tools/call",
-                  "params": {
-                    "name": "analyse_project",
-                    "arguments": {
-                      "projectPath": "/workspace/project"
-                    }
-                  }
-                }
-                """);
+        var response = dispatch(dispatcher, """
+                {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}""");
 
-        assertInstanceOf(LocalSource.class, pipelineService.capturedSource);
+        var tools = response.get("result").get("tools");
+        assertThat(tools.size()).isEqualTo(1);
+        assertThat(tools.get(0).get("name").asText()).isEqualTo("test_tool");
+        assertThat(tools.get(0).get("description").asText()).isEqualTo("A test tool");
     }
 
-    private static final class CapturingPipelineService extends AnalysisPipelineService {
+    @Test
+    void toolsCallRoutesToCorrectHandler() throws Exception {
+        var handler = stubHandler("my_tool", "desc");
+        var dispatcher = new McpDispatcher(List.of(handler));
 
-        private UUID capturedJobId;
-        private ProjectSource capturedSource;
+        var response = dispatch(dispatcher, """
+                {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"my_tool","arguments":{"key":"value"}}}""");
 
-        private CapturingPipelineService() {
-            super(null, null, null, null);
-        }
+        assertThat(response.get("result").get("content").get(0).get("text").asText()).isEqualTo("handled");
+    }
 
-        @Override
-        public AnalysisJob startAnalysis(UUID jobId, ProjectSource source) {
-            capturedJobId = jobId;
-            capturedSource = source;
-            return AnalysisJob.create(jobId, source, Instant.now());
-        }
+    @Test
+    void toolsCallReturnsErrorForUnknownTool() throws Exception {
+        var dispatcher = new McpDispatcher(List.of());
+
+        var response = dispatch(dispatcher, """
+                {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"unknown","arguments":{}}}""");
+
+        assertThat(response.get("error").get("code").asInt()).isEqualTo(-32601);
+    }
+
+    @Test
+    void unknownMethodReturnsError() throws Exception {
+        var dispatcher = new McpDispatcher(List.of());
+
+        var response = dispatch(dispatcher, """
+                {"jsonrpc":"2.0","id":5,"method":"nonexistent","params":{}}""");
+
+        assertThat(response.get("error").get("code").asInt()).isEqualTo(-32601);
+    }
+
+    private JsonNode dispatch(McpDispatcher dispatcher, String json) throws Exception {
+        return mapper.readTree(dispatcher.dispatch(json));
+    }
+
+    private McpToolHandler stubHandler(String name, String description) {
+        return new McpToolHandler() {
+            @Override public String toolName() { return name; }
+            @Override public String description() { return description; }
+            @Override public Map<String, Object> inputSchema() { return Map.of("type", "object"); }
+            @Override public ToolCallResult handle(JsonNode args) { return ToolCallResult.success("handled"); }
+        };
     }
 }

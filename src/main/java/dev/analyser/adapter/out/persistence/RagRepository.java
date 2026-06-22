@@ -14,8 +14,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 @ApplicationScoped
 public class RagRepository {
 
-    static final int DEFAULT_EMBEDDING_DIMENSION = 384;
-    static final double DEFAULT_SIMILARITY_THRESHOLD = 0.75d;
+    static final int DEFAULT_EMBEDDING_DIMENSION = 0; // 0 = no validation (dynamic)
+    static final double DEFAULT_SIMILARITY_THRESHOLD = 0.5d;
 
     private static final String INSERT_SQL = """
             INSERT INTO rag_chunks (id, job_id, phase_id, content, embedding)
@@ -118,7 +118,7 @@ public class RagRepository {
     }
 
     private void validateEmbedding(double[] embedding) {
-        if (embedding.length != embeddingDimension) {
+        if (embeddingDimension > 0 && embedding.length != embeddingDimension) {
             throw new IllegalArgumentException("Expected embedding length " + embeddingDimension + " but was " + embedding.length);
         }
     }

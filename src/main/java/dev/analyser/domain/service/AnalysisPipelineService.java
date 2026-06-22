@@ -113,8 +113,8 @@ public class AnalysisPipelineService {
             // Phase 5: LLM class purpose summaries
             savePhase(jobId, reuseOrRun(cached, jobId, 5, () -> runPhase5(jobId)));
 
-            // Phase 6: Static analysis
-            savePhase(jobId, reuseOrRun(cached, jobId, 6, () -> runPhase6(jobId)));
+            // Phase 6: Static analysis (Checkstyle/PMD/SpotBugs/OWASP)
+            savePhase(jobId, reuseOrRun(cached, jobId, 6, () -> runPhase6(jobId, tree)));
 
             // Phase 7: LLM architecture assessment
             savePhase(jobId, reuseOrRun(cached, jobId, 7, () -> runPhase7(jobId)));
@@ -246,10 +246,26 @@ public class AnalysisPipelineService {
         String readme = tree.readmeContent().orElse("No README");
         String classNames = classes.stream().map(ClassSummary::qualifiedName).limit(50).collect(Collectors.joining(", "));
 
+        // Structural hints for classification
+        boolean hasMainMethod = classes.stream().anyMatch(c -> c.methods().stream().anyMatch(m -> "main".equals(m.name())));
+        boolean hasRestEndpoints = classes.stream().anyMatch(c -> c.annotations().stream().anyMatch(a -> a.equals("Path") || a.equals("RestController")));
+        boolean hasSpringBootApp = classes.stream().anyMatch(c -> c.annotations().stream().anyMatch(a -> a.contains("SpringBootApplication") || a.contains("QuarkusMain")));
+        boolean exportsApi = classes.stream().filter(c -> c.kind() == ClassSummary.ClassKind.INTERFACE && c.methods().stream().anyMatch(m -> m.isPublic())).count() > 5;
+        String buildFile = tree.buildDescriptor().map(p -> p.getFileName().toString()).orElse("unknown");
+
+        String structuralHints = "\n\nStructural indicators:"
+                + "\n- Has main() method: " + hasMainMethod
+                + "\n- Has REST endpoints: " + hasRestEndpoints
+                + "\n- Has application entry point (@SpringBootApplication/@QuarkusMain): " + hasSpringBootApp
+                + "\n- Exports >5 public interfaces: " + exportsApi
+                + "\n- Build file: " + buildFile
+                + "\n- Total classes: " + classes.size();
+
         String response = pipelineLlm.prompt(
                 "You are a software analyst. Respond in JSON with keys: summary, purpose, classification, mainFunctionalities (array).",
-                "Analyze this Java project.\nREADME:\n" + readme + "\n\nClasses: " + classNames +
-                        "\n\nProvide: 1) A 1-3 sentence executive summary, 2) business purpose, 3) classification (one of: Web Application, Backend Service, Library, Batch Processor, CLI Tool), 4) main functionalities list.");
+                "Analyze this Java project.\nREADME:\n" + readme + "\n\nClasses (first 50): " + classNames
+                        + structuralHints
+                        + "\n\nProvide: 1) A 1-3 sentence executive summary, 2) business purpose, 3) classification (one of: Web Application, Backend Service, Library/Framework, Batch Processor, CLI Tool — use structural indicators to decide), 4) main functionalities list.");
 
         return phaseResult(jobId, 4, response);
     }
@@ -301,46 +317,38 @@ public class AnalysisPipelineService {
         }
     }
 
-    private PhaseResult runPhase6(UUID jobId) {
+    private PhaseResult runPhase6(UUID jobId, ProjectTree tree) {
         var classes = classStore.getOrDefault(jobId, List.of());
-        var warnings = new ArrayList<Map<String, Object>>();
+        var staticAnalysis = new StaticAnalysisService();
 
-        for (var cls : classes) {
-            // God class
-            if (cls.methods().size() > 20) {
-                warnings.add(warning(cls, "god-class", "HIGH", "Class has " + cls.methods().size() + " methods — consider splitting"));
-            }
-            // Large class
-            if (cls.lineCount() > 500) {
-                warnings.add(warning(cls, "large-class", "MEDIUM", "Class has " + cls.lineCount() + " lines"));
-            }
-            // Missing public methods on non-interface
-            if (cls.kind() == ClassSummary.ClassKind.CLASS && cls.methods().stream().noneMatch(m -> m.isPublic())) {
-                warnings.add(warning(cls, "no-public-api", "LOW", "Class has no public methods"));
-            }
-            // System.out usage
-            if (cls.imports().stream().anyMatch(i -> i.contains("System"))) {
-                // Heuristic — check field/method names isn't reliable, but annotations can hint
-            }
-            // Empty interface (marker interface without justification)
-            if (cls.kind() == ClassSummary.ClassKind.INTERFACE && cls.methods().isEmpty()) {
-                warnings.add(warning(cls, "empty-interface", "LOW", "Interface declares no methods (marker interface)"));
-            }
-            // High method complexity (too many parameters)
-            for (var method : cls.methods()) {
-                if (method.parameterTypes().size() > 5) {
-                    warnings.add(warning(cls, "too-many-params", "MEDIUM",
-                            "Method " + method.name() + " has " + method.parameterTypes().size() + " parameters — consider a parameter object"));
-                }
-            }
-            // Class depends on too many others (high efferent coupling)
-            if (cls.imports().size() > 20) {
-                warnings.add(warning(cls, "high-coupling", "MEDIUM",
-                        "Class imports " + cls.imports().size() + " types — high coupling"));
-            }
+        // Deep AST-based analysis on actual source files
+        var fileWarnings = staticAnalysis.analyzeFiles(tree.javaSourceFiles());
+        // Metrics-based analysis on parsed summaries
+        var metricWarnings = staticAnalysis.analyzeMetrics(classes);
+
+        var allWarnings = new ArrayList<>(fileWarnings);
+        allWarnings.addAll(metricWarnings);
+
+        // Group by category for the tool response
+        var byCategory = new LinkedHashMap<String, List<Map<String, Object>>>();
+        for (var w : allWarnings) {
+            byCategory.computeIfAbsent(w.category(), k -> new ArrayList<>())
+                    .add(Map.of("rule", w.rule(), "severity", w.severity(),
+                            "file", w.file(), "line", w.line(), "message", w.message()));
         }
 
-        return phaseResult(jobId, 6, toJson(Map.of("warnings", warnings, "totalWarnings", warnings.size())));
+        return phaseResult(jobId, 6, toJson(Map.of(
+                "warnings", allWarnings.stream().map(w -> Map.of(
+                        "rule", w.rule(), "category", w.category(), "severity", w.severity(),
+                        "file", w.file(), "line", w.line(), "message", w.message())).toList(),
+                "totalWarnings", allWarnings.size(),
+                "bySeverity", Map.of(
+                        "CRITICAL", allWarnings.stream().filter(w -> "CRITICAL".equals(w.severity())).count(),
+                        "HIGH", allWarnings.stream().filter(w -> "HIGH".equals(w.severity())).count(),
+                        "MEDIUM", allWarnings.stream().filter(w -> "MEDIUM".equals(w.severity())).count(),
+                        "LOW", allWarnings.stream().filter(w -> "LOW".equals(w.severity())).count()),
+                "byCategory", byCategory.entrySet().stream()
+                        .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().size())))));
     }
 
     private PhaseResult runPhase7(UUID jobId) {
@@ -448,10 +456,6 @@ public class AnalysisPipelineService {
 
     private PhaseResult phaseResult(UUID jobId, int phaseId, String json) {
         return new PhaseResult(jobId, phaseId, PhaseStatus.COMPLETED, json, Instant.now());
-    }
-
-    private Map<String, Object> warning(ClassSummary cls, String rule, String severity, String message) {
-        return Map.of("class", cls.qualifiedName(), "rule", rule, "severity", severity, "message", message);
     }
 
     private String toJson(Object obj) {

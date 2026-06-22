@@ -89,7 +89,10 @@ Set via environment variables or `application.properties`. Using the same model 
 | `get_module_purpose` | Module responsibility |
 | `get_related_classes` | Dependencies, dependents, inheritance |
 | `get_class_diagram` | PlantUML diagram for a package |
-| `get_checkstyle_warnings` | Code style issues |
+| `get_checkstyle_warnings` | Code style issues (Checkstyle/PMD rules) |
+| `get_security_report` | OWASP Top 10 security findings |
+| `get_dependency_vulnerabilities` | Known CVEs in dependencies |
+| `get_test_coverage_gaps` | Untested classes/methods |
 
 ### On-demand (LLM-powered, heavier)
 

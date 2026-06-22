@@ -3,7 +3,6 @@ name: java-project-analyser
 services:
   db:
     image: pgvector/pgvector:pg17
-    profiles: [local, openai, anthropic]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-analyser}
       POSTGRES_USER: ${POSTGRES_USER:-analyser}
@@ -14,14 +13,50 @@ services:
       - db-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  app:
+    build:
+      context: .
+      dockerfile: src/main/docker/Dockerfile.jvm
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Database
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-analyser}
+      QUARKUS_DATASOURCE_USERNAME: ${POSTGRES_USER:-analyser}
+      QUARKUS_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-analyser}
+      # Auto-analysis: set PROJECT_URL in .env to auto-start on boot
+      PROJECT_URL: ${PROJECT_URL:-}
+      # OpenAI (default for demo — no Ollama needed)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PIPELINE_MODEL_PROVIDER: ${PIPELINE_MODEL_PROVIDER:-openai}
+      PIPELINE_MODEL_NAME: ${PIPELINE_MODEL_NAME:-gpt-4o-mini}
+      QUERY_MODEL_PROVIDER: ${QUERY_MODEL_PROVIDER:-openai}
+      QUERY_MODEL_NAME: ${QUERY_MODEL_NAME:-gpt-4o-mini}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-text-embedding-3-small}
+      # Ollama (only needed if using ollama as provider)
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    ports:
+      - "8080:8080"
+    volumes:
+      - cache:/app/analysis-cache
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/q/health/ready >/dev/null"]
       interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 10s
+      retries: 12
+      start_period: 30s
 
+  # Optional: only needed when using Ollama as provider
   ollama:
     image: ollama/ollama:latest
-    profiles: [local]
+    profiles: [ollama]
     ports:
       - "11434:11434"
     volumes:
@@ -33,41 +68,7 @@ services:
       retries: 12
       start_period: 15s
 
-  app:
-    build:
-      context: .
-      dockerfile: src/main/docker/Dockerfile.jvm
-      args:
-        HTTP_PROXY: ${HTTP_PROXY:-}
-        HTTPS_PROXY: ${HTTPS_PROXY:-}
-        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,ollama}
-    profiles: [local, openai, anthropic]
-    depends_on:
-      db:
-        condition: service_healthy
-      ollama:
-        condition: service_healthy
-        required: false
-    environment:
-      QUARKUS_PROFILE: ${QUARKUS_PROFILE:-local}
-      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-analyser}
-      QUARKUS_DATASOURCE_USERNAME: ${POSTGRES_USER:-analyser}
-      QUARKUS_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-analyser}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-    ports:
-      - "8080:8080"
-    volumes:
-      - ${WORKSPACE_PATH:-./workspace}:/workspace:ro
-      - ${CACHE_PATH:-./cache}:/cache:rw
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/q/health/ready >/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
-
 volumes:
   db-data:
+  cache:
   ollama-models:

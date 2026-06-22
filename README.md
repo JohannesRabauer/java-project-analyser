@@ -1,42 +1,40 @@
 # Java Project Analyser
 
-A local MCP server that deeply understands Java projects. Start it, point it at your codebase, and any MCP-capable AI agent (Claude Code, Cursor, VS Code Copilot) can query rich structural and semantic knowledge — class relationships, architecture patterns, potential bugs, and more.
+A local MCP server that deeply understands Java projects. Start it, point it at your codebase, and any MCP-capable AI agent (Claude Code, Cursor, VS Code Copilot) can query rich structural and semantic knowledge — class relationships, architecture patterns, potential bugs, security issues, and more.
 
-## How It Works
-
-1. You start the server via Docker Compose
-2. Your AI agent calls `analyse_project` to trigger deep analysis (JavaParser AST + LLM)
-3. Results are stored as a searchable knowledge graph + RAG embeddings
-4. Your agent queries pre-computed facts (instant) or on-demand LLM reasoning (10-30s)
-
-## Quickstart
+## Quickstart (3 steps)
 
 ```sh
+# 1. Copy the config template
 cp .env.example .env
-# Edit .env to set your model preferences (see Configuration below)
 
-docker compose --profile local up
+# 2. Edit .env — set your project URL and OpenAI key
+#    PROJECT_URL=https://github.com/your-org/your-java-project
+#    OPENAI_API_KEY=sk-...
+
+# 3. Start everything
+docker compose up
 ```
 
-This starts PostgreSQL (pgvector), Ollama, and the analyser server.
+That's it. The system will:
+1. Build the analyser (first run only, ~3 min)
+2. Start PostgreSQL + the MCP server
+3. Clone your project and run the analysis pipeline (~5 min for a 400-class project)
+4. Serve the MCP API at `http://localhost:8080/mcp/sse`
 
-Once running:
-- Landing page: http://localhost:8080/ (status + MCP integration instructions)
-- MCP stdio: configure your agent to launch the server process directly
-- MCP SSE: connect to `/mcp/sse` for HTTP-based transport
+Open `http://localhost:8080` to see progress and get connection instructions.
 
-## Connecting Your Agent
+## Connect Your Agent
 
 ### Claude Code
 
-Add to your `mcp.json`:
+Add to your `~/.claude/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "java-analyser": {
-      "command": "docker",
-      "args": ["exec", "-i", "java-project-analyser-app-1", "java", "-jar", "/app/analyser.jar", "--stdio"]
+      "url": "http://localhost:8080/mcp/sse"
     }
   }
 }
@@ -48,32 +46,21 @@ Add to `.cursor/mcp.json`:
 
 ```json
 {
-  "java-analyser": {
-    "command": "docker",
-    "args": ["exec", "-i", "java-project-analyser-app-1", "java", "-jar", "/app/analyser.jar", "--stdio"]
+  "mcpServers": {
+    "java-analyser": {
+      "url": "http://localhost:8080/mcp/sse"
+    }
   }
 }
 ```
 
-## Configuration
+## How It Works
 
-The server supports separate model configuration for three concerns:
-
-```properties
-# Pipeline model (bulk analysis at index time — can be cheap/local)
-analyser.pipeline.model-provider=ollama
-analyser.pipeline.model-name=llama3
-
-# Query model (on-demand reasoning at query time — can be high-quality)  
-analyser.query.model-provider=openai
-analyser.query.model-name=gpt-4o
-
-# Embedding model
-analyser.embedding.provider=ollama
-analyser.embedding.model-name=nomic-embed-text
-```
-
-Set via environment variables or `application.properties`. Using the same model for all three is valid.
+1. **AST Parsing** — JavaParser extracts classes, methods, fields, annotations, and builds a dependency graph
+2. **LLM Analysis** — GPT-4o-mini generates project summaries, class purposes, and architecture assessments
+3. **Static Analysis** — Checkstyle, PMD, SpotBugs, and OWASP rules detect code quality and security issues
+4. **RAG Indexing** — All knowledge is embedded and stored in pgvector for semantic search
+5. **MCP Server** — 15 tools exposed via standard MCP protocol for any AI agent to use
 
 ## MCP Tools
 
@@ -102,6 +89,37 @@ Set via environment variables or `application.properties`. Using the same model 
 | `get_possible_bugs` | LLM bug analysis (10-30s) |
 | `suggest_improvement` | Refactoring suggestions (10-30s) |
 
+## Configuration
+
+The server supports separate model configuration for different concerns:
+
+```properties
+# Pipeline model (bulk analysis — can be cheap/local)
+PIPELINE_MODEL_PROVIDER=openai        # or: ollama
+PIPELINE_MODEL_NAME=gpt-4o-mini       # or: llama3
+
+# Query model (on-demand reasoning — can be high-quality)
+QUERY_MODEL_PROVIDER=openai
+QUERY_MODEL_NAME=gpt-4o-mini          # or: gpt-4o for better quality
+
+# Embedding model
+EMBEDDING_PROVIDER=openai
+EMBEDDING_MODEL_NAME=text-embedding-3-small
+```
+
+### Using Ollama (local, free)
+
+```sh
+# Start with Ollama profile
+docker compose --profile ollama up
+
+# Set in .env:
+PIPELINE_MODEL_PROVIDER=ollama
+PIPELINE_MODEL_NAME=llama3
+EMBEDDING_PROVIDER=ollama
+EMBEDDING_MODEL_NAME=nomic-embed-text
+```
+
 ## Local Development
 
 ```sh
@@ -118,5 +136,4 @@ Quarkus Dev Services auto-starts PostgreSQL (pgvector) for development.
 - LangChain4J (LLM integration — Ollama + OpenAI)
 - PostgreSQL + pgvector (RAG storage)
 - jOOQ (database access)
-- Thymeleaf (landing page)
-- MCP JSON-RPC 2.0 (stdio + SSE transport)
+- MCP JSON-RPC 2.0 (SSE + stdio transport)

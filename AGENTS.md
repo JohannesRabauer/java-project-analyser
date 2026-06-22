@@ -180,3 +180,75 @@ Additionally:
 - First sentence says what the paragraph is about
 - Show code and prompts, don't just claim things work
 - Conclusions make a clear statement — never end with 'it remains exciting'
+
+## Current Project State (2026-06-22)
+
+### What This Project Is
+A local MCP server that deeply understands Java projects. Developer starts it via Docker Compose, points it at a codebase (Git URL or local path), and any MCP-capable AI agent (Claude Code, Cursor) can query 20 tools for structural/semantic knowledge.
+
+### Architecture
+- **Framework**: Quarkus 3.35 (Java 21) — NOT Spring Boot
+- **Core**: JavaParser AST extraction → ClassGraph → 8-phase pipeline
+- **LLM**: LangChain4J (quarkus-langchain4j) with Ollama + OpenAI support
+- **Storage**: PostgreSQL + pgvector for RAG, jOOQ for access
+- **MCP**: Hand-rolled JSON-RPC 2.0 dispatcher with CDI-based tool handler routing
+- **Transports**: SSE (primary for Docker), Stdio (for IDE integration)
+
+### Key Design Decisions
+- **McpToolHandler interface**: Each tool is a CDI bean implementing `McpToolHandler`. Dispatcher discovers all via `Instance<McpToolHandler>`.
+- **Separate model configs**: `analyser.pipeline.*` (bulk analysis), `analyser.query.*` (on-demand reasoning), `analyser.embedding.*`
+- **Phase results stored in-memory** (`phaseResultStore` map in `AnalysisPipelineService`) AND cached to filesystem (`FilesystemCacheAdapter`)
+- **ClassGraph stored in-memory** per job — not yet persisted to DB
+- **No Vaadin** — killed in this session. Landing page is Qute template.
+- **Auto-analysis on startup** when `PROJECT_URL` env var is set (`AutoAnalysisStartup`)
+
+### The 8-Phase Pipeline
+1. JavaParser AST → ClassGraph (structural, deterministic)
+2. Dependency & technology extraction from build files + imports
+3. Graph metrics (package coupling, complexity hotspots, circular deps)
+4. LLM: Project summary + classification (with structural hints)
+5. LLM: Class purpose summaries (batched, 10 classes per call)
+6. Static analysis: Checkstyle/PMD/SpotBugs/OWASP rules via AST visitors (`StaticAnalysisService`)
+7. LLM: Architecture assessment
+8. RAG embedding & indexing (chunks classes + phase results into pgvector)
+
+### 20 MCP Tools
+Pre-computed (instant): analyse_project, get_analysis_status, get_project_summary, get_architecture_overview, get_class_purpose, get_module_purpose, get_related_classes, get_class_diagram, get_checkstyle_warnings, get_security_report, get_dependency_vulnerabilities, get_test_coverage_gaps, get_quality_scorecard, get_project_conventions, get_modernization_assessment
+
+On-demand (LLM-heavy): search_codebase, get_possible_bugs, suggest_improvement, generate_arc42_overview, generate_module_documentation
+
+### Demo Flow
+```
+cp .env.example .env  # Set PROJECT_URL + OPENAI_API_KEY
+docker compose up     # Builds app, starts PostgreSQL, auto-analyzes
+# MCP ready at http://localhost:8080/mcp/sse after ~5 min
+```
+
+### Known Issues / Technical Debt
+- **LLM adapters**: `PipelineLlmAdapter` and `QueryLlmAdapter` both inject the same `ChatModel` CDI bean (no actual separation yet). Quarkiverse interceptor makes manual model construction hard — needs named beans or profiles.
+- **No CachePort for ClassGraph rebuild**: When loading from cache (phase 1 reused), the in-memory ClassGraph is NOT rebuilt. The graph store is empty on cache hit.
+- **Phase 5 fragility**: LLM batch responses often unparseable JSON → "Purpose extraction failed". Needs retry with smaller batches or structured output enforcement.
+- **AnalysisJobRepository** test needs Docker (QuarkusTest + Testcontainers). Same for `RagRepositoryTest`.
+- **GitProjectAdapterTest** fails on Windows due to file locking on `.git` objects.
+- **Embedding dimension mismatch**: V4 migration makes pgvector column untyped, but the HNSW index was created for 384-dim. OpenAI embeds at 1536-dim — index may not work correctly without recreation.
+
+### Test Commands
+```sh
+# All tests that work without Docker (67 pass):
+./mvnw test "-Dtest=!AnalysisJobRepositoryTest,!RagRepositoryTest,!GitProjectAdapterTest"
+
+# Just the core tests:
+./mvnw test -Dtest="JavaParserAstServiceTest,ClassGraphTest,FilesystemCacheAdapterTest,AnalysisPipelineServiceTest,McpDispatcherTest,WalkingSkeletonSmokeTest,FullPipelineIntegrationTest,StaticAnalysisServiceTest"
+```
+
+### What Was Validated
+- Full pipeline ran successfully against https://github.com/xdev-software/spring-data-eclipse-store (430 Java files) in 5 min 16 sec with OpenAI gpt-4o-mini
+- All 20 tools return meaningful results on a real medium-sized project
+- Static analysis correctly detects: cyclomatic complexity, empty catch blocks, SQL injection, hardcoded secrets, string reference equality, etc.
+
+### Next Steps (not yet implemented)
+- File watcher for incremental re-analysis (deferred to v2)
+- Proper named CDI beans for separate pipeline/query models
+- Rebuild ClassGraph from cache on pipeline resume
+- Phase 5 retry logic for unparseable LLM responses
+- QuarkusTest integration test with full CDI container + Testcontainers

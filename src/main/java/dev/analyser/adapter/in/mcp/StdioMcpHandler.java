@@ -1,6 +1,7 @@
 package dev.analyser.adapter.in.mcp;
 
 import io.quarkus.runtime.StartupEvent;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -11,6 +12,7 @@ import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * MCP stdio transport handler. Disabled by default (HTTP/SSE is the default mode).
@@ -50,5 +52,15 @@ public class StdioMcpHandler {
                 // Stdio transport closed — normal shutdown
             }
         });
+    }
+
+    @PreDestroy
+    void shutdown() {
+        executor.shutdownNow();
+        try {
+            executor.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }

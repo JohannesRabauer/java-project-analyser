@@ -111,8 +111,8 @@ public class JavaParserAstService {
     }
 
     private int countLines(Path file) {
-        try {
-            return (int) Files.lines(file).count();
+        try (var lines = Files.lines(file)) {
+            return (int) lines.count();
         } catch (IOException e) {
             return 0;
         }

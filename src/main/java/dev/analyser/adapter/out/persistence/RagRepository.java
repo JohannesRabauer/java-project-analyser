@@ -51,8 +51,8 @@ public class RagRepository {
     @Inject
     public RagRepository(
             DataSource dataSource,
-            @ConfigProperty(name = "rag.embedding.dimension", defaultValue = "384") int embeddingDimension,
-            @ConfigProperty(name = "rag.search.similarity-threshold", defaultValue = "0.75") double similarityThreshold) {
+            @ConfigProperty(name = "rag.embedding.dimension", defaultValue = "0") int embeddingDimension,
+            @ConfigProperty(name = "rag.search.similarity-threshold", defaultValue = "0.5") double similarityThreshold) {
         this.dataSource = dataSource;
         this.embeddingDimension = embeddingDimension;
         this.similarityThreshold = clampSimilarityThreshold(similarityThreshold);

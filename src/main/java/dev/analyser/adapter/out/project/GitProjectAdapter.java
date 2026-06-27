@@ -8,10 +8,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 final class GitProjectAdapter {
+
+    private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https", "git", "ssh", "file");
 
     private final ProjectTreeLoader projectTreeLoader;
     private final Path checkoutRoot;
@@ -26,6 +29,7 @@ final class GitProjectAdapter {
     }
 
     ProjectTree loadProject(GitSource source) {
+        validateRepositoryUrl(source.repositoryUrl());
         var destination = prepareCloneDirectory(source.repositoryUrl());
 
         try {
@@ -54,8 +58,20 @@ final class GitProjectAdapter {
         }
     }
 
-    private void cloneRepository(URI repositoryUrl, Path destination) throws IOException, InterruptedException {
-        var process = new ProcessBuilder(
+    private void validateRepositoryUrl(URI repositoryUrl) {
+        var scheme = repositoryUrl.getScheme();
+        // scp-like SSH syntax (git@host:path) has no URI scheme; allow it explicitly.
+        boolean scpLike = scheme == null && repositoryUrl.toString().matches("^[^/]+@[^/]+:.+");
+        if (scpLike) {
+            return;
+        }
+        if (scheme == null || !ALLOWED_SCHEMES.contains(scheme.toLowerCase())) {
+            throw new IllegalArgumentException(
+                    "Unsupported Git URL scheme: " + scheme + " (allowed: " + ALLOWED_SCHEMES + ")");
+        }
+    }
+
+    private void cloneRepository(URI repositoryUrl, Path destination) throws IOException, InterruptedException {        var process = new ProcessBuilder(
                         "git",
                         "clone",
                         "--quiet",

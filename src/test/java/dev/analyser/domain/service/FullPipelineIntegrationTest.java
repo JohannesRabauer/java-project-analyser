@@ -66,7 +66,7 @@ class FullPipelineIntegrationTest {
         service.runPipeline(job.start(Instant.now()));
 
         assertThat(jobRepo.lastStatus(jobId)).isEqualTo(AnalysisStatus.INDEXED);
-        assertThat(jobRepo.getPhaseResults(jobId)).hasSize(7);
+        assertThat(jobRepo.getPhaseResults(jobId)).hasSize(8);
         assertThat(ragRepo.savedChunks).isNotEmpty();
     }
 

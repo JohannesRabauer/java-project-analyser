@@ -8,6 +8,7 @@ import com.github.javaparser.ast.stmt.*;
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
 import dev.analyser.domain.model.ClassSummary;
 import jakarta.enterprise.context.ApplicationScoped;
+import org.jboss.logging.Logger;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -20,6 +21,8 @@ import java.util.*;
  */
 @ApplicationScoped
 public class StaticAnalysisService {
+
+    private static final Logger LOG = Logger.getLogger(StaticAnalysisService.class);
 
     private final JavaParser parser = new JavaParser();
 
@@ -41,7 +44,9 @@ public class StaticAnalysisService {
                 warnings.addAll(runPmdRules(cu, fileName));
                 warnings.addAll(runSpotBugsRules(cu, fileName));
                 warnings.addAll(runOwaspRules(cu, fileName));
-            } catch (IOException ignored) {}
+            } catch (IOException e) {
+                LOG.warnf(e, "Failed to read/parse source file for static analysis: %s", file);
+            }
         }
         return warnings;
     }

@@ -9,8 +9,10 @@ import dev.analyser.application.port.out.EmbeddingPort;
 import dev.analyser.application.port.out.LlmPort;
 import dev.analyser.application.port.out.ProjectSourcePort;
 import dev.analyser.domain.model.*;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Named;
+import org.jboss.logging.Logger;
 
 import java.nio.file.Files;
 import java.time.Instant;
@@ -22,6 +24,8 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class AnalysisPipelineService {
+
+    private static final Logger LOG = Logger.getLogger(AnalysisPipelineService.class);
 
     private final AnalysisJobRepository jobRepository;
     private final ProjectSourcePort projectSourcePort;
@@ -75,6 +79,11 @@ public class AnalysisPipelineService {
         return jobRepository.findById(jobId);
     }
 
+    @PreDestroy
+    void shutdown() {
+        executor.shutdownNow();
+    }
+
     public List<PhaseResult> getPhaseResults(UUID jobId) {
         return jobRepository.getPhaseResults(jobId);
     }
@@ -97,6 +106,9 @@ public class AnalysisPipelineService {
         try {
             var cached = loadCachedPhases(jobId);
             ProjectTree tree = projectSourcePort.loadProject(job.source());
+
+            // Rebuild in-memory structural state so cached resumes still populate the graph/classes.
+            ensureStructuralState(jobId, tree);
 
             // Phase 1: AST + graph
             savePhase(jobId, reuseOrRun(cached, jobId, 1, () -> runPhase1(jobId, tree)));
@@ -122,15 +134,37 @@ public class AnalysisPipelineService {
             jobRepository.updateStatus(jobId, AnalysisStatus.COMPLETED);
 
             // Phase 8: RAG embedding & indexing
-            runPhase8(jobId);
+            savePhase(jobId, reuseOrRun(cached, jobId, 8, () -> runPhase8(jobId)));
 
             jobRepository.updateStatus(jobId, AnalysisStatus.INDEXED);
         } catch (Exception e) {
+            LOG.errorf(e, "Analysis pipeline failed for job %s", jobId);
             jobRepository.updateStatus(jobId, AnalysisStatus.FAILED);
         }
     }
 
     private PhaseResult runPhase1(UUID jobId, ProjectTree tree) {
+        ensureStructuralState(jobId, tree);
+        var allClasses = classStore.getOrDefault(jobId, List.of());
+        var graph = graphStore.get(jobId);
+
+        String json = toJson(Map.of(
+                "classCount", allClasses.size(),
+                "packageCount", allClasses.stream().map(ClassSummary::packageName).distinct().count(),
+                "edgeCount", graph == null ? 0 : graph.edges().size(),
+                "classes", allClasses.stream().map(ClassSummary::qualifiedName).toList()));
+        return phaseResult(jobId, 1, json);
+    }
+
+    /**
+     * Parse the project once and populate the in-memory graph/class stores. Idempotent:
+     * skips work when the graph is already present (e.g. within a single pipeline run), but
+     * still runs when phases are reused from cache so downstream phases see populated state.
+     */
+    private void ensureStructuralState(UUID jobId, ProjectTree tree) {
+        if (graphStore.containsKey(jobId)) {
+            return;
+        }
         List<ClassSummary> allClasses = new ArrayList<>();
         for (var file : tree.javaSourceFiles()) {
             allClasses.addAll(astService.parseFile(file));
@@ -138,16 +172,8 @@ public class AnalysisPipelineService {
         for (var file : tree.testSourceFiles()) {
             allClasses.addAll(astService.parseFile(file));
         }
-        ClassGraph graph = ClassGraph.buildFrom(allClasses);
-        graphStore.put(jobId, graph);
+        graphStore.put(jobId, ClassGraph.buildFrom(allClasses));
         classStore.put(jobId, allClasses);
-
-        String json = toJson(Map.of(
-                "classCount", allClasses.size(),
-                "packageCount", allClasses.stream().map(ClassSummary::packageName).distinct().count(),
-                "edgeCount", graph.edges().size(),
-                "classes", allClasses.stream().map(ClassSummary::qualifiedName).toList()));
-        return phaseResult(jobId, 1, json);
     }
 
     private PhaseResult runPhase2(UUID jobId, ProjectTree tree) {
@@ -162,7 +188,9 @@ public class AnalysisPipelineService {
                 while (matcher.find()) {
                     deps.add(Map.of("groupId", matcher.group(1), "artifactId", matcher.group(2)));
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                LOG.warnf(e, "Failed to parse build descriptor for dependencies (job %s)", jobId);
+            }
         });
 
         // Detect technologies from imports
@@ -311,6 +339,7 @@ public class AnalysisPipelineService {
             }
         } catch (Exception e) {
             // Fallback: store raw response
+            LOG.warnf(e, "Class purpose extraction failed for batch of %d classes", batch.size());
             for (var cls : batch) {
                 out.putIfAbsent(cls.qualifiedName(), "Purpose extraction failed");
             }
@@ -376,8 +405,11 @@ public class AnalysisPipelineService {
         return phaseResult(jobId, 7, response);
     }
 
-    private void runPhase8(UUID jobId) {
-        if (embeddingPort == null || ragRepository == null) return;
+    private PhaseResult runPhase8(UUID jobId) {
+        if (embeddingPort == null || ragRepository == null) {
+            return phaseResult(jobId, 8, toJson(Map.of(
+                    "indexed", false, "reason", "embedding/RAG not configured", "chunkCount", 0)));
+        }
 
         var classes = classStore.getOrDefault(jobId, List.of());
         var chunks = new ArrayList<RagChunk>();
@@ -405,6 +437,7 @@ public class AnalysisPipelineService {
         if (!chunks.isEmpty()) {
             ragRepository.saveAll(chunks);
         }
+        return phaseResult(jobId, 8, toJson(Map.of("indexed", true, "chunkCount", chunks.size())));
     }
 
     private String buildChunkContent(ClassSummary cls) {
@@ -460,6 +493,9 @@ public class AnalysisPipelineService {
 
     private String toJson(Object obj) {
         try { return mapper.writeValueAsString(obj); }
-        catch (JsonProcessingException e) { return "{}"; }
+        catch (JsonProcessingException e) {
+            LOG.warnf(e, "Failed to serialize phase result to JSON");
+            return "{}";
+        }
     }
 }

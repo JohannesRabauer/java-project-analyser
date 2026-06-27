@@ -7,6 +7,7 @@ import dev.analyser.adapter.in.mcp.McpProtocol.*;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import org.jboss.logging.Logger;
 
 import java.util.List;
 import java.util.Map;
@@ -14,6 +15,8 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class McpDispatcher {
+
+    private static final Logger LOG = Logger.getLogger(McpDispatcher.class);
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, McpToolHandler> handlers;
@@ -97,6 +100,7 @@ public class McpDispatcher {
             ToolCallResult result = handler.handle(args);
             return McpResponse.success(request.id(), result);
         } catch (Exception e) {
+            LOG.errorf(e, "Exception during MCP tool call '%s'", toolName);
             return McpResponse.success(request.id(),
                     ToolCallResult.error("Exception during tool call: " + e.getMessage()));
         }

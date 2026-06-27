@@ -54,14 +54,14 @@ class AnalysisPipelineServiceTest {
         // Job should be INDEXED
         assertThat(jobRepo.lastStatus(jobId)).isEqualTo(AnalysisStatus.INDEXED);
 
-        // All 7 phases should be saved
+        // All 8 phases (including Phase 8 RAG indexing) should be saved
         var phases = jobRepo.getPhaseResults(jobId);
-        assertThat(phases).hasSize(7);
+        assertThat(phases).hasSize(8);
         assertThat(phases.get(0).phaseId()).isEqualTo(1);
         assertThat(phases.get(0).resultJson()).contains("OrderService");
 
-        // Cache should have all 7 phases
-        assertThat(cachePort.savedPhaseIds()).containsExactly(1, 2, 3, 4, 5, 6, 7);
+        // Cache should have all 8 phases
+        assertThat(cachePort.savedPhaseIds()).containsExactly(1, 2, 3, 4, 5, 6, 7, 8);
     }
 
     @Test
